@@ -10,6 +10,8 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 Create and manage LayerV qURL secure access links from the WordPress admin.
 
+THIS PLUGIN IS IN ACTIVE DEVELOPMENT.
+
 == Description ==
 
 WP qURL integrates [LayerV](https://layerv.ai/) qURL secure access links into your WordPress site. Authors and administrators can create time-limited, policy-bound portal links to protected URLs directly from the WordPress admin area.

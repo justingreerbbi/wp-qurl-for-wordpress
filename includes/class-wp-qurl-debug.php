@@ -24,7 +24,7 @@ class Debug {
 	}
 
 	/**
-	 * Build a diagnostic snapshot for a blocked or failed handoff response.
+	 * Build a diagnostic snapshot for a blocked-page response.
 	 *
 	 * @param int    $post_id      Protected page ID, or 0 when unknown.
 	 * @param string $block_reason Block reason code.
@@ -47,10 +47,6 @@ class Debug {
 			? sanitize_text_field( wp_unslash( $_SERVER['QUERY_STRING'] ) )
 			: '';
 
-		$handoff_token = ! empty( $_GET['wp_qurl_handoff'] )
-			? sanitize_text_field( wp_unslash( $_GET['wp_qurl_handoff'] ) )
-			: '';
-
 		$context = array(
 			'generated_at_utc' => gmdate( 'Y-m-d H:i:s' ),
 			'block_reason'     => sanitize_key( (string) $block_reason ),
@@ -61,7 +57,7 @@ class Debug {
 				'resource_ids'           => $resource_ids,
 				'webhook_registered'     => Settings::is_webhook_registered(),
 				'webhook_has_secret'     => Settings::has_webhook_secret(),
-				'page_handoff_ready'     => Settings::is_page_handoff_ready(),
+				'webhook_ready'          => Settings::is_webhook_ready(),
 				'api_configured'         => Settings::is_configured(),
 				'reverse_proxy_detected' => Protector::detects_reverse_proxy(),
 			),
@@ -79,16 +75,14 @@ class Debug {
 				'user_agent'   => ! empty( $_SERVER['HTTP_USER_AGENT'] )
 					? sanitize_textarea_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) )
 					: '',
-				'handoff_token_present' => '' !== $handoff_token,
-				'handoff_token_preview' => self::preview_secret( $handoff_token ),
 				'get_params'   => self::collect_get_params(),
 			),
 			'headers'          => self::collect_request_headers(),
 			'qurl_headers'     => self::collect_qurl_headers(),
 			'cookies'          => self::collect_qurl_cookies( $post_id ),
-			'access_checks'    => self::collect_access_checks( $post_id, $handoff_token ),
+			'access_checks'    => self::collect_access_checks( $post_id ),
 			'layer_v_sessions' => self::collect_layer_v_sessions( $api, $resource_ids ),
-			'local_records'    => self::collect_local_records( $post_id, $resource_ids, $handoff_token ),
+			'local_records'    => self::collect_local_records( $post_id, $resource_ids ),
 			'recent_access_log'=> self::collect_recent_access_log( $resource_ids, $client_ip ),
 		);
 
@@ -181,12 +175,7 @@ class Debug {
 				continue;
 			}
 
-			$scalar = sanitize_text_field( wp_unslash( (string) $value ) );
-			if ( 'wp_qurl_handoff' === $key ) {
-				$params[ $key ] = self::preview_secret( $scalar );
-			} else {
-				$params[ $key ] = $scalar;
-			}
+			$params[ $key ] = sanitize_text_field( wp_unslash( (string) $value ) );
 		}
 
 		return $params;
@@ -342,24 +331,22 @@ class Debug {
 	/**
 	 * Summarize which access checks passed or failed.
 	 *
-	 * @param int    $post_id       Page ID.
-	 * @param string $handoff_token Raw handoff token from the request.
+	 * @param int $post_id Page ID.
 	 * @return array
 	 */
-	private static function collect_access_checks( $post_id, $handoff_token ) {
+	private static function collect_access_checks( $post_id ) {
 		$client_ip  = Protector::get_client_ip();
 		$user_agent = ! empty( $_SERVER['HTTP_USER_AGENT'] )
 			? sanitize_textarea_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) )
 			: '';
 
 		$checks = array(
-			'logged_in'                => is_user_logged_in(),
-			'user_can_manage_qurls'    => Capabilities::current_user_can_manage(),
-			'user_can_edit_page'       => $post_id ? current_user_can( 'edit_page', $post_id ) : false,
-			'page_grant_cookie_sent'   => $post_id ? ! empty( $_COOKIE[ 'wp_qurl_page_' . absint( $post_id ) ] ) : false,
-			'handoff_token_in_request' => '' !== $handoff_token,
-			'client_ip'                => $client_ip,
-			'local_ip_ua_grant_match'  => false,
+			'logged_in'               => is_user_logged_in(),
+			'user_can_manage_qurls'   => Capabilities::current_user_can_manage(),
+			'user_can_edit_page'      => $post_id ? current_user_can( 'edit_page', $post_id ) : false,
+			'page_grant_cookie_sent'  => $post_id ? ! empty( $_COOKIE[ 'wp_qurl_page_' . absint( $post_id ) ] ) : false,
+			'client_ip'               => $client_ip,
+			'local_ip_ua_grant_match' => false,
 		);
 
 		if ( $post_id ) {
@@ -389,22 +376,6 @@ class Debug {
 				$checks['page_grant_payload']  = $decoded['payload'];
 			} else {
 				$checks['page_grant_db_match'] = false;
-			}
-		}
-
-		if ( '' !== $handoff_token ) {
-			$handoff = Database::get_handoff_by_token( $handoff_token );
-			$checks['legacy_handoff_found'] = (bool) $handoff;
-			if ( $handoff ) {
-				$checks['legacy_handoff'] = array(
-					'id'          => (int) $handoff->id,
-					'resource_id' => $handoff->resource_id,
-					'qurl_id'     => $handoff->qurl_id,
-					'page_id'     => (int) $handoff->page_id,
-					'target_url'  => $handoff->target_url,
-					'expires_at'  => $handoff->expires_at,
-					'status'      => $handoff->status,
-				);
 			}
 		}
 
@@ -449,33 +420,24 @@ class Debug {
 	}
 
 	/**
-	 * Collect local handoff, grant, and token records related to the page.
+	 * Collect local grant and token records related to the page.
 	 *
-	 * @param int    $post_id       Page ID.
-	 * @param array  $resource_ids  Resource IDs.
-	 * @param string $handoff_token Raw handoff token.
+	 * @param int   $post_id      Page ID.
+	 * @param array $resource_ids Resource IDs.
 	 * @return array
 	 */
-	private static function collect_local_records( $post_id, array $resource_ids, $handoff_token ) {
+	private static function collect_local_records( $post_id, array $resource_ids ) {
 		global $wpdb;
 
 		$records = array(
-			'handoffs' => array(),
-			'grants'   => array(),
-			'tokens'   => array(),
+			'grants' => array(),
+			'tokens' => array(),
 		);
 
 		if ( $post_id ) {
-			$records['handoffs'] = $wpdb->get_results(
-				$wpdb->prepare(
-					'SELECT id, resource_id, qurl_id, status, claimed_uses, max_uses, expires_at, created_at FROM ' . Database::handoffs_table() . ' WHERE page_id = %d ORDER BY id DESC LIMIT 10',
-					$post_id
-				),
-				ARRAY_A
-			);
 			$records['grants'] = $wpdb->get_results(
 				$wpdb->prepare(
-					'SELECT id, handoff_id, page_id, resource_id, qurl_id, session_id, delivery_id, src_ip, status, expires_at, claimed_at, created_at FROM ' . Database::grants_table() . ' WHERE page_id = %d ORDER BY id DESC LIMIT 10',
+					'SELECT id, page_id, resource_id, qurl_id, session_id, delivery_id, src_ip, status, expires_at, claimed_at, created_at FROM ' . Database::grants_table() . ' WHERE page_id = %d ORDER BY id DESC LIMIT 10',
 					$post_id
 				),
 				ARRAY_A
@@ -484,7 +446,7 @@ class Debug {
 			$placeholders = implode( ', ', array_fill( 0, count( $resource_ids ), '%s' ) );
 			$records['grants'] = $wpdb->get_results(
 				$wpdb->prepare(
-					'SELECT id, handoff_id, page_id, resource_id, qurl_id, session_id, delivery_id, src_ip, status, expires_at, claimed_at, created_at FROM ' . Database::grants_table() . " WHERE resource_id IN ({$placeholders}) ORDER BY id DESC LIMIT 10",
+					'SELECT id, page_id, resource_id, qurl_id, session_id, delivery_id, src_ip, status, expires_at, claimed_at, created_at FROM ' . Database::grants_table() . " WHERE resource_id IN ({$placeholders}) ORDER BY id DESC LIMIT 10",
 					$resource_ids
 				),
 				ARRAY_A

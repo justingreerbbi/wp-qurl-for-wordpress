@@ -678,7 +678,7 @@ class Admin {
 			);
 		} else {
 			$count = isset( $result['terminated'] ) ? (int) $result['terminated'] : 0;
-			Database::revoke_handoff_grants( $resource_id );
+			Database::revoke_page_grants( $resource_id );
 			set_transient(
 				'wp_qurl_admin_notice',
 				array(

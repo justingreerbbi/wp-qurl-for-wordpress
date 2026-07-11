@@ -108,7 +108,7 @@ class Page_Meta {
 			<?php esc_html_e( 'When enabled, visitors must open a qURL access link before viewing this page. Access is unlocked by matching the visitor IP and browser from LayerV.', 'wp-qurl' ); ?>
 		</p>
 
-		<?php if ( ! Settings::is_page_handoff_ready() ) : ?>
+		<?php if ( ! Settings::is_webhook_ready() ) : ?>
 			<p class="notice notice-warning inline">
 				<?php esc_html_e( 'A LayerV webhook is recommended so access events are recorded immediately. Without it, WordPress can still unlock via live LayerV sessions.', 'wp-qurl' ); ?>
 			</p>

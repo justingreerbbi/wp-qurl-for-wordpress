@@ -763,7 +763,7 @@ class Service {
 
 		if ( '' !== $resource_id ) {
 			$updated = Database::revoke_active_tokens( $resource_id, $qurl_id );
-			Database::revoke_handoff_grants( $resource_id, $qurl_id );
+			Database::revoke_page_grants( $resource_id, $qurl_id );
 			if ( $updated > 0 ) {
 				$local_revoked = true;
 			}
@@ -820,7 +820,7 @@ class Service {
 		}
 
 		$local_revoked = Database::revoke_active_tokens( $resource_id ) > 0;
-		Database::revoke_handoff_grants( $resource_id );
+		Database::revoke_page_grants( $resource_id );
 
 		$remote_synced       = false;
 		$remote_error        = '';
@@ -882,6 +882,6 @@ class Service {
 		}
 
 		Database::revoke_active_tokens( $resource_id, $qurl_id );
-		Database::revoke_handoff_grants( $resource_id, $qurl_id );
+		Database::revoke_page_grants( $resource_id, $qurl_id );
 	}
 }

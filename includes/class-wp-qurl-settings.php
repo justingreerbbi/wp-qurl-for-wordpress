@@ -165,11 +165,11 @@ class Settings {
 	}
 
 	/**
-	 * Whether webhook configuration can authorize protected-page handoffs.
+	 * Whether a LayerV webhook is registered for protected-page access events.
 	 *
 	 * @return bool
 	 */
-	public static function is_page_handoff_ready() {
+	public static function is_webhook_ready() {
 		return self::is_webhook_registered()
 			&& self::has_webhook_secret()
 			&& in_array( 'qurl.accessed', self::get_webhook_events(), true );
@@ -319,30 +319,7 @@ class Settings {
 	 * @param string $from_version Previously installed DB schema version.
 	 */
 	public static function migrate_from_db_version( $from_version ) {
-		$settings = get_option( self::OPTION_KEY, array() );
-		if ( ! is_array( $settings ) ) {
-			$settings = array();
-		}
-
-		$changed = false;
-
-		if ( version_compare( $from_version, '1.4.2', '<' ) && ! array_key_exists( 'enable_debug_mode', $settings ) ) {
-			$settings['enable_debug_mode'] = false;
-			$changed                       = true;
-		}
-
-		if ( version_compare( $from_version, '2.0.0', '<' ) ) {
-			if ( array_key_exists( 'trust_proxy_headers', $settings ) ) {
-				unset( $settings['trust_proxy_headers'] );
-				$changed = true;
-			}
-
-			delete_post_meta_by_key( '_wp_qurl_resource_id' );
-		}
-
-		if ( $changed ) {
-			update_option( self::OPTION_KEY, $settings );
-		}
+		unset( $from_version );
 	}
 
 	/**

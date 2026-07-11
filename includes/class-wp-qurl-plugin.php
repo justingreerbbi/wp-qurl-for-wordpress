@@ -55,7 +55,6 @@ class Plugin {
 
 		Webhook::instance()->init();
 
-		( new Handoff() )->init();
 		( new Protector() )->init();
 	}
 

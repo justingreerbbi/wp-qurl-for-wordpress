@@ -65,7 +65,7 @@ class Crypto {
 			return self::decrypt_authenticated( substr( $encoded, strlen( self::VERSION_PREFIX ) ), $encoded );
 		}
 
-		return self::decrypt_legacy( $encoded );
+		return $encoded;
 	}
 
 	/**
@@ -87,27 +87,6 @@ class Crypto {
 		$plaintext  = openssl_decrypt( $ciphertext, 'aes-256-gcm', self::get_key(), OPENSSL_RAW_DATA, $iv, $tag );
 
 		return false !== $plaintext ? $plaintext : $fallback;
-	}
-
-	/**
-	 * Decrypt values written by plugin versions before 1.3.1.
-	 *
-	 * @param string $encoded Legacy Base64-encoded AES-256-CBC value.
-	 * @return string
-	 */
-	private static function decrypt_legacy( $encoded ) {
-		$raw = base64_decode( $encoded, true );
-		if ( false === $raw || strlen( $raw ) < 17 ) {
-			return $encoded;
-		}
-
-		$iv         = substr( $raw, 0, 16 );
-		$ciphertext = substr( $raw, 16 );
-		$key        = self::get_key();
-
-		$plaintext = openssl_decrypt( $ciphertext, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv );
-
-		return false !== $plaintext ? $plaintext : $encoded;
 	}
 
 	/**

@@ -190,7 +190,7 @@ class Webhook {
 		Service::sync_local_token_from_webhook( $event_type, $event_data );
 
 		if ( in_array( $event_type, array( 'qurl.revoked', 'qurl.expired', 'token.expired', 'qurl.token_exhausted', 'resource.closed' ), true ) ) {
-			Database::revoke_handoff_grants( $resource_id, $qurl_id );
+			Database::revoke_page_grants( $resource_id, $qurl_id );
 		}
 
 		/**

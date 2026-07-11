@@ -407,9 +407,9 @@ class Protector {
 	}
 
 	/**
-	 * Clear obsolete pre-handoff cookies on deny.
+	 * Clear leftover cookies from earlier plugin builds on deny.
 	 */
-	private function clear_obsolete_cookies() {
+	private function clear_stale_cookies() {
 		foreach ( array( 'wp_qurl_access', 'wp_qurl_access_grant' ) as $cookie_name ) {
 			if ( empty( $_COOKIE[ $cookie_name ] ) ) {
 				continue;
@@ -442,7 +442,7 @@ class Protector {
 	 */
 	private function render_blocked( $post_id, $reason ) {
 		$this->clear_page_cookie( $post_id );
-		$this->clear_obsolete_cookies();
+		$this->clear_stale_cookies();
 
 		status_header( 403 );
 		nocache_headers();

@@ -52,17 +52,7 @@ class Database {
 	}
 
 	/**
-	 * Get the browser handoffs table name.
-	 *
-	 * @return string
-	 */
-	public static function handoffs_table() {
-		global $wpdb;
-		return $wpdb->prefix . 'qurl_handoffs';
-	}
-
-	/**
-	 * Get the browser grants table name.
+	 * Get the page grants table name.
 	 *
 	 * @return string
 	 */
@@ -80,7 +70,6 @@ class Database {
 		$charset_collate = $wpdb->get_charset_collate();
 		$tokens_table    = self::tokens_table();
 		$log_table       = self::access_log_table();
-		$handoffs_table  = self::handoffs_table();
 		$grants_table    = self::grants_table();
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -124,31 +113,8 @@ class Database {
 			KEY created_at (created_at)
 		) {$charset_collate};";
 
-		$sql_handoffs = "CREATE TABLE {$handoffs_table} (
-			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-			token_id bigint(20) unsigned NOT NULL DEFAULT 0,
-			token_hash char(64) NOT NULL,
-			resource_id varchar(32) NOT NULL DEFAULT '',
-			qurl_id varchar(32) NOT NULL DEFAULT '',
-			page_id bigint(20) unsigned NOT NULL,
-			target_url text NOT NULL,
-			expires_at datetime DEFAULT NULL,
-			session_duration int(10) unsigned NOT NULL DEFAULT 3600,
-			max_uses int(10) unsigned NOT NULL DEFAULT 1,
-			claimed_uses int(10) unsigned NOT NULL DEFAULT 0,
-			status varchar(20) NOT NULL DEFAULT 'active',
-			created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY  (id),
-			UNIQUE KEY token_hash (token_hash),
-			KEY token_id (token_id),
-			KEY resource_id (resource_id),
-			KEY qurl_id (qurl_id),
-			KEY page_status (page_id,status)
-		) {$charset_collate};";
-
 		$sql_grants = "CREATE TABLE {$grants_table} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-			handoff_id bigint(20) unsigned NOT NULL DEFAULT 0,
 			page_id bigint(20) unsigned NOT NULL DEFAULT 0,
 			resource_id varchar(32) NOT NULL DEFAULT '',
 			qurl_id varchar(32) NOT NULL DEFAULT '',
@@ -164,7 +130,6 @@ class Database {
 			created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY  (id),
 			UNIQUE KEY delivery_id (delivery_id),
-			KEY handoff_status (handoff_id,status),
 			KEY page_status (page_id,status),
 			KEY resource_id (resource_id),
 			KEY qurl_id (qurl_id),
@@ -174,7 +139,6 @@ class Database {
 
 		dbDelta( $sql_tokens );
 		dbDelta( $sql_log );
-		dbDelta( $sql_handoffs );
 		dbDelta( $sql_grants );
 
 		if ( self::grant_schema_is_ready() ) {
@@ -190,23 +154,15 @@ class Database {
 	private static function grant_schema_is_ready() {
 		global $wpdb;
 
-		foreach ( array( self::handoffs_table(), self::grants_table() ) as $table ) {
-			$found = $wpdb->get_var(
-				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) )
-			);
-			if ( $found !== $table ) {
-				return false;
-			}
+		$found = $wpdb->get_var(
+			$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( self::grants_table() ) )
+		);
+		if ( $found !== self::grants_table() ) {
+			return false;
 		}
 
-		$required_handoff_columns = array( 'token_hash', 'resource_id', 'qurl_id', 'page_id', 'target_url', 'expires_at', 'session_duration', 'max_uses', 'claimed_uses', 'status' );
-		$required_grant_columns   = array( 'handoff_id', 'page_id', 'resource_id', 'qurl_id', 'delivery_id', 'src_ip', 'user_agent_hash', 'access_count', 'consumed', 'expires_at', 'status', 'claimed_at' );
+		$required_grant_columns = array( 'page_id', 'resource_id', 'qurl_id', 'delivery_id', 'src_ip', 'user_agent_hash', 'access_count', 'consumed', 'expires_at', 'status' );
 
-		foreach ( $required_handoff_columns as $column ) {
-			if ( $column !== $wpdb->get_var( 'SHOW COLUMNS FROM ' . self::handoffs_table() . " LIKE '" . esc_sql( $column ) . "'" ) ) {
-				return false;
-			}
-		}
 		foreach ( $required_grant_columns as $column ) {
 			if ( $column !== $wpdb->get_var( 'SHOW COLUMNS FROM ' . self::grants_table() . " LIKE '" . esc_sql( $column ) . "'" ) ) {
 				return false;
@@ -219,68 +175,6 @@ class Database {
 		return 'delivery_id' === $delivery_column
 			&& 'delivery_id' === $log_index
 			&& 'delivery_id' === $delivery_index;
-	}
-
-	/**
-	 * Store a handoff generated before a protected qURL is returned.
-	 *
-	 * @param array $data Handoff values, including the raw token.
-	 * @return int|false
-	 */
-	public static function insert_handoff( array $data ) {
-		global $wpdb;
-
-		$inserted = $wpdb->insert(
-			self::handoffs_table(),
-			array(
-				'token_id'         => absint( $data['token_id'] ?? 0 ),
-				'token_hash'       => hash( 'sha256', (string) ( $data['token'] ?? '' ) ),
-				'resource_id'      => sanitize_text_field( $data['resource_id'] ?? '' ),
-				'qurl_id'          => sanitize_text_field( $data['qurl_id'] ?? '' ),
-				'page_id'          => absint( $data['page_id'] ?? 0 ),
-				'target_url'       => esc_url_raw( $data['target_url'] ?? '' ),
-				'expires_at'       => $data['expires_at'] ?? null,
-				'session_duration' => max( 1, absint( $data['session_duration'] ?? HOUR_IN_SECONDS ) ),
-				'max_uses'         => max( 1, absint( $data['max_uses'] ?? 1 ) ),
-				'claimed_uses'     => 0,
-				'status'           => 'active',
-			),
-			array( '%d', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%d', '%s' )
-		);
-
-		return $inserted ? (int) $wpdb->insert_id : false;
-	}
-
-	/**
-	 * Attach the local token row to a handoff after token persistence.
-	 *
-	 * @param int $handoff_id Handoff ID.
-	 * @param int $token_id   Token ID.
-	 * @return bool
-	 */
-	public static function attach_handoff_token( $handoff_id, $token_id ) {
-		global $wpdb;
-		return false !== $wpdb->update(
-			self::handoffs_table(),
-			array( 'token_id' => absint( $token_id ) ),
-			array( 'id' => absint( $handoff_id ) ),
-			array( '%d' ),
-			array( '%d' )
-		);
-	}
-
-	/**
-	 * Remove an unissued handoff after local mint persistence fails.
-	 *
-	 * @param int $handoff_id Handoff ID.
-	 */
-	public static function delete_handoff( $handoff_id ) {
-		global $wpdb;
-		$wpdb->delete(
-			self::handoffs_table(),
-			array( 'id' => absint( $handoff_id ) ),
-			array( '%d' )
-		);
 	}
 
 	/**
@@ -332,7 +226,6 @@ class Database {
 		$inserted = $wpdb->insert(
 			self::grants_table(),
 			array(
-				'handoff_id'      => 0,
 				'page_id'         => $page_id,
 				'resource_id'     => $resource_id,
 				'qurl_id'         => $qurl_id,
@@ -345,7 +238,7 @@ class Database {
 				'expires_at'      => $expires_at,
 				'status'          => 'active',
 			),
-			array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s' )
+			array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s' )
 		);
 
 		return $inserted ? (int) $wpdb->insert_id : false;
@@ -392,7 +285,6 @@ class Database {
 		$inserted   = $wpdb->insert(
 			self::grants_table(),
 			array(
-				'handoff_id'      => 0,
 				'page_id'         => $page_id,
 				'resource_id'     => $resource_id,
 				'qurl_id'         => $qurl_id,
@@ -405,7 +297,7 @@ class Database {
 				'expires_at'      => $expires_at,
 				'status'          => 'active',
 			),
-			array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s' )
+			array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s' )
 		);
 
 		if ( ! $inserted ) {
@@ -455,27 +347,6 @@ class Database {
 	}
 
 	/**
-	 * Check for an active protected-page handoff keyed by exact LayerV IDs.
-	 *
-	 * @param string $qurl_id     qURL display ID.
-	 * @param string $resource_id Resource ID.
-	 * @return bool
-	 */
-	public static function has_active_handoff_for_qurl( $qurl_id, $resource_id ) {
-		global $wpdb;
-
-		$found = $wpdb->get_var(
-			$wpdb->prepare(
-				'SELECT id FROM ' . self::handoffs_table() . " WHERE qurl_id = %s AND resource_id = %s AND status = 'active' LIMIT 1",
-				sanitize_text_field( $qurl_id ),
-				sanitize_text_field( $resource_id )
-			)
-		);
-
-		return ! empty( $found );
-	}
-
-	/**
 	 * Check whether an access delivery already created a browser grant.
 	 *
 	 * @param string $delivery_id LayerV delivery ID.
@@ -495,180 +366,6 @@ class Database {
 	}
 
 	/**
-	 * Atomically claim the next ready grant for a raw handoff token.
-	 *
-	 * @param string $raw_token  Raw browser handoff token.
-	 * @param string $user_agent Browser user agent.
-	 * @param string $client_ip  Browser IP address.
-	 * @return object|null Joined grant and handoff data.
-	 */
-	public static function claim_handoff_grant( $raw_token, $user_agent = '', $client_ip = '' ) {
-		global $wpdb;
-
-		$token_hash = hash( 'sha256', (string) $raw_token );
-		$wpdb->query( 'START TRANSACTION' );
-		$handoff = $wpdb->get_row(
-			$wpdb->prepare(
-				'SELECT * FROM ' . self::handoffs_table() . " WHERE token_hash = %s AND status = 'active' AND claimed_uses < max_uses AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) LIMIT 1 FOR UPDATE",
-				$token_hash
-			)
-		);
-
-		if ( ! $handoff || (int) $handoff->claimed_uses >= (int) $handoff->max_uses ) {
-			$wpdb->query( 'ROLLBACK' );
-			return null;
-		}
-
-		$user_agent_hash = '' !== $user_agent ? hash( 'sha256', $user_agent ) : '';
-		$grant           = $wpdb->get_row(
-			$wpdb->prepare(
-				'SELECT * FROM ' . self::grants_table() . " WHERE handoff_id = %d AND status = 'ready' AND expires_at > UTC_TIMESTAMP() ORDER BY id ASC LIMIT 1 FOR UPDATE",
-				(int) $handoff->id
-			)
-		);
-
-		if ( ! $grant ) {
-			$wpdb->query( 'ROLLBACK' );
-			return null;
-		}
-
-		$bind_user_agent = (bool) apply_filters( 'wp_qurl_bind_handoff_user_agent', false );
-		if ( $bind_user_agent && $grant->user_agent_hash && ! hash_equals( $grant->user_agent_hash, $user_agent_hash ) ) {
-			$wpdb->query( 'ROLLBACK' );
-			return null;
-		}
-
-		$bind_ip = (bool) apply_filters( 'wp_qurl_bind_handoff_ip', false );
-		if ( $bind_ip && $grant->src_ip && $client_ip && $grant->src_ip !== $client_ip ) {
-			$wpdb->query( 'ROLLBACK' );
-			return null;
-		}
-
-		$reserved = $wpdb->query(
-			$wpdb->prepare(
-				'UPDATE ' . self::handoffs_table() . ' SET claimed_uses = claimed_uses + 1 WHERE id = %d AND claimed_uses < max_uses',
-				(int) $handoff->id
-			)
-		);
-
-		if ( 1 !== (int) $reserved ) {
-			$wpdb->query( 'ROLLBACK' );
-			return null;
-		}
-
-		$claimed = $wpdb->query(
-			$wpdb->prepare(
-				'UPDATE ' . self::grants_table() . " SET status = 'claimed', claimed_at = UTC_TIMESTAMP() WHERE id = %d AND status = 'ready'",
-				(int) $grant->id
-			)
-		);
-		if ( 1 !== (int) $claimed ) {
-			$wpdb->query( 'ROLLBACK' );
-			return null;
-		}
-
-		$grant->page_id     = (int) $handoff->page_id;
-		$grant->target_url  = $handoff->target_url;
-		$grant->resource_id = $handoff->resource_id;
-		$grant->qurl_id     = $handoff->qurl_id;
-		$wpdb->query( 'COMMIT' );
-		return $grant;
-	}
-
-	/**
-	 * Release a claim when WordPress could not issue its page cookie.
-	 *
-	 * @param int $grant_id Grant ID.
-	 * @return bool
-	 */
-	public static function release_handoff_grant( $grant_id ) {
-		global $wpdb;
-
-		$wpdb->query( 'START TRANSACTION' );
-		$grant = $wpdb->get_row(
-			$wpdb->prepare(
-				'SELECT * FROM ' . self::grants_table() . " WHERE id = %d AND status = 'claimed' LIMIT 1 FOR UPDATE",
-				absint( $grant_id )
-			)
-		);
-
-		if ( ! $grant ) {
-			$wpdb->query( 'ROLLBACK' );
-			return false;
-		}
-
-		$released = $wpdb->query(
-			$wpdb->prepare(
-				'UPDATE ' . self::grants_table() . " SET status = 'ready', claimed_at = NULL WHERE id = %d AND status = 'claimed'",
-				(int) $grant->id
-			)
-		);
-		$restored = $wpdb->query(
-			$wpdb->prepare(
-				'UPDATE ' . self::handoffs_table() . ' SET claimed_uses = GREATEST(0, claimed_uses - 1) WHERE id = %d',
-				(int) $grant->handoff_id
-			)
-		);
-
-		if ( 1 !== (int) $released || 1 !== (int) $restored ) {
-			$wpdb->query( 'ROLLBACK' );
-			return false;
-		}
-
-		$wpdb->query( 'COMMIT' );
-		return true;
-	}
-
-	/**
-	 * Find a handoff by its raw browser token (legacy redirect lookup).
-	 *
-	 * @param string $raw_token Raw handoff token.
-	 * @return object|null
-	 */
-	public static function get_handoff_by_token( $raw_token ) {
-		global $wpdb;
-		return $wpdb->get_row(
-			$wpdb->prepare(
-				'SELECT * FROM ' . self::handoffs_table() . ' WHERE token_hash = %s LIMIT 1',
-				hash( 'sha256', (string) $raw_token )
-			)
-		);
-	}
-
-	/**
-	 * Find an active handoff by its raw browser token.
-	 *
-	 * @param string $raw_token Raw handoff token.
-	 * @return object|null
-	 */
-	public static function get_active_handoff( $raw_token ) {
-		global $wpdb;
-		return $wpdb->get_row(
-			$wpdb->prepare(
-				'SELECT * FROM ' . self::handoffs_table() . " WHERE token_hash = %s AND status = 'active' AND claimed_uses < max_uses AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) LIMIT 1",
-				hash( 'sha256', (string) $raw_token )
-			)
-		);
-	}
-
-	/**
-	 * Check whether a stored handoff can still accept an access event.
-	 *
-	 * @param int $handoff_id Handoff ID.
-	 * @return bool
-	 */
-	public static function is_handoff_available( $handoff_id ) {
-		global $wpdb;
-		$found = $wpdb->get_var(
-			$wpdb->prepare(
-				'SELECT id FROM ' . self::handoffs_table() . " WHERE id = %d AND status = 'active' AND claimed_uses < max_uses AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) LIMIT 1",
-				absint( $handoff_id )
-			)
-		);
-		return ! empty( $found );
-	}
-
-	/**
 	 * Get an active page grant by ID.
 	 *
 	 * @param int $grant_id Grant ID.
@@ -679,7 +376,7 @@ class Database {
 		global $wpdb;
 		return $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::grants_table() . " WHERE id = %d AND page_id = %d AND status IN ('active','claimed') AND expires_at > UTC_TIMESTAMP() LIMIT 1",
+				'SELECT * FROM ' . self::grants_table() . " WHERE id = %d AND page_id = %d AND status = 'active' AND expires_at > UTC_TIMESTAMP() LIMIT 1",
 				absint( $grant_id ),
 				absint( $page_id )
 			)
@@ -697,7 +394,7 @@ class Database {
 		global $wpdb;
 		return $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::grants_table() . " WHERE delivery_id = %s AND page_id = %d AND status IN ('active','claimed') AND expires_at > UTC_TIMESTAMP() LIMIT 1",
+				'SELECT * FROM ' . self::grants_table() . " WHERE delivery_id = %s AND page_id = %d AND status = 'active' AND expires_at > UTC_TIMESTAMP() LIMIT 1",
 				sanitize_text_field( $delivery_id ),
 				absint( $page_id )
 			)
@@ -722,7 +419,7 @@ class Database {
 
 		$grants = $wpdb->get_results(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::grants_table() . " WHERE page_id = %d AND status IN ('active','claimed') AND expires_at > UTC_TIMESTAMP() ORDER BY id DESC LIMIT 50",
+				'SELECT * FROM ' . self::grants_table() . " WHERE page_id = %d AND status = 'active' AND expires_at > UTC_TIMESTAMP() ORDER BY id DESC LIMIT 50",
 				$page_id
 			)
 		);
@@ -796,27 +493,16 @@ class Database {
 	}
 
 	/**
-	 * Revoke handoffs and grants for a LayerV token or resource.
+	 * Revoke page grants for a LayerV token or resource.
 	 *
 	 * @param string $resource_id Resource ID.
 	 * @param string $qurl_id     Optional qURL ID.
 	 */
-	public static function revoke_handoff_grants( $resource_id, $qurl_id = '' ) {
+	public static function revoke_page_grants( $resource_id, $qurl_id = '' ) {
 		global $wpdb;
 
 		$resource_id = sanitize_text_field( $resource_id );
 		$qurl_id     = sanitize_text_field( $qurl_id );
-
-		$where = '' !== $qurl_id
-			? $wpdb->prepare( 'qurl_id = %s', $qurl_id )
-			: $wpdb->prepare( 'resource_id = %s', $resource_id );
-
-		$handoff_ids = $wpdb->get_col( 'SELECT id FROM ' . self::handoffs_table() . " WHERE {$where}" );
-		if ( ! empty( $handoff_ids ) ) {
-			$ids = implode( ',', array_map( 'absint', $handoff_ids ) );
-			$wpdb->query( 'UPDATE ' . self::handoffs_table() . " SET status = 'revoked' WHERE id IN ({$ids})" );
-			$wpdb->query( 'UPDATE ' . self::grants_table() . " SET status = 'revoked' WHERE handoff_id IN ({$ids}) AND status <> 'revoked'" );
-		}
 
 		if ( '' !== $qurl_id ) {
 			$wpdb->query(
@@ -825,14 +511,15 @@ class Database {
 					$qurl_id
 				)
 			);
-		} else {
-			$wpdb->query(
-				$wpdb->prepare(
-					'UPDATE ' . self::grants_table() . " SET status = 'revoked' WHERE resource_id = %s AND status <> 'revoked'",
-					$resource_id
-				)
-			);
+			return;
 		}
+
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . self::grants_table() . " SET status = 'revoked' WHERE resource_id = %s AND status <> 'revoked'",
+				$resource_id
+			)
+		);
 	}
 
 	/**
@@ -1280,9 +967,6 @@ class Database {
 		global $wpdb;
 
 		$wpdb->query( 'DELETE FROM ' . self::grants_table() . ' WHERE expires_at <= UTC_TIMESTAMP()' );
-		$wpdb->query(
-			'DELETE h FROM ' . self::handoffs_table() . ' h LEFT JOIN ' . self::grants_table() . " g ON g.handoff_id = h.id WHERE g.id IS NULL AND (h.expires_at <= UTC_TIMESTAMP() OR h.status <> 'active')"
-		);
 		$wpdb->query( 'UPDATE ' . self::tokens_table() . " SET status = 'expired' WHERE status = 'active' AND expires_at <= UTC_TIMESTAMP()" );
 		$wpdb->query(
 			$wpdb->prepare(

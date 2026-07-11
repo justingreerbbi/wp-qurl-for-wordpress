@@ -421,8 +421,8 @@ class Webhook_Manager {
 	 * @return array
 	 */
 	public static function sanitize_events( array $events ) {
-		$sanitized  = array();
-		$legacy_map = array(
+		$sanitized   = array();
+		$event_alias = array(
 			'qurlcreated'         => 'qurl.created',
 			'qurlexpired'         => 'qurl.expired',
 			'qurlrevoked'         => 'qurl.revoked',
@@ -446,8 +446,8 @@ class Webhook_Manager {
 			}
 
 			$event = strtolower( sanitize_text_field( (string) $event ) );
-			if ( isset( $legacy_map[ $event ] ) ) {
-				$event = $legacy_map[ $event ];
+			if ( isset( $event_alias[ $event ] ) ) {
+				$event = $event_alias[ $event ];
 			}
 			if ( preg_match( '/^[a-z0-9_]+\.[a-z0-9_]+$/', $event ) ) {
 				$sanitized[] = $event;

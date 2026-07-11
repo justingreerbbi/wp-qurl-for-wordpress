@@ -15,7 +15,6 @@ wp_clear_scheduled_hook( 'wp_qurl_cleanup' );
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'qurl_tokens' );
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'qurl_access_log' );
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'qurl_grants' );
-$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'qurl_handoffs' );
 
 // Remove options.
 delete_option( 'wp_qurl_settings' );

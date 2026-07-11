@@ -1,0 +1,43 @@
+.wp-qurl-mint {
+	margin: 1.5em 0;
+	padding: 1em;
+	border: 1px solid #dcdcde;
+	border-radius: 4px;
+	background: #fff;
+}
+
+.wp-qurl-mint__status {
+	margin-top: 0.75em;
+	color: #50575e;
+}
+
+.wp-qurl-mint__status.is-error {
+	color: #b32d2e;
+}
+
+.wp-qurl-mint__result {
+	margin-top: 1em;
+}
+
+.wp-qurl-mint__link {
+	width: 100%;
+	max-width: 100%;
+	margin: 0.5em 0;
+	font-family: monospace;
+}
+
+.wp-qurl-mint__copy {
+	margin-left: 0.5em;
+}
+
+.wp-qurl-mint-editor__preview {
+	padding: 1em;
+	border: 1px dashed #c3c4c7;
+	background: #f6f7f7;
+}
+
+.wp-qurl-mint--forbidden,
+.wp-qurl-mint--misconfigured,
+.wp-qurl-mint--logged-out {
+	color: #50575e;
+}

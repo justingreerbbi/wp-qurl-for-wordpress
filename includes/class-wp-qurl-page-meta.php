@@ -20,6 +20,11 @@ class Page_Meta {
 	const META_PROTECTED = '_wp_qurl_protected';
 
 	/**
+	 * Post meta key: admit token appended to the LayerV target URL.
+	 */
+	const META_ADMIT = '_wp_qurl_admit';
+
+	/**
 	 * Register hooks.
 	 */
 	public static function init() {
@@ -38,28 +43,166 @@ class Page_Meta {
 	}
 
 	/**
-	 * Get LayerV resource IDs minted for a protected page URL.
+	 * IDs of published pages marked qURL-protected.
 	 *
-	 * @param int $post_id Page ID.
-	 * @return string[]
+	 * @return int[]
 	 */
-	public static function get_protection_resource_ids( $post_id ) {
-		$permalink = get_permalink( $post_id );
-		if ( ! $permalink ) {
-			return array();
+	public static function protected_page_ids() {
+		static $ids = null;
+		if ( null !== $ids ) {
+			return $ids;
 		}
 
-		$resource_ids = Database::get_resource_ids_for_target( Service::normalize_target_url( $permalink ) );
+		global $wpdb;
 
-		/**
-		 * Filter resource IDs associated with a protected page.
-		 *
-		 * @param string[] $resource_ids LayerV resource IDs.
-		 * @param int      $post_id      Protected page ID.
-		 */
-		$resource_ids = apply_filters( 'wp_qurl_protection_resource_ids', $resource_ids, $post_id );
+		// Direct SQL so this cannot recurse through pre_get_posts.
+		$found = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+				INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+				WHERE pm.meta_key = %s AND pm.meta_value = %s
+				AND p.post_type = 'page' AND p.post_status = 'publish'
+				LIMIT 100",
+				self::META_PROTECTED,
+				'1'
+			)
+		);
 
-		return array_values( array_unique( array_filter( array_map( 'sanitize_text_field', $resource_ids ) ) ) );
+		$ids = array_values( array_filter( array_map( 'absint', (array) $found ) ) );
+		return $ids;
+	}
+
+	/**
+	 * Stable admit token for a protected page.
+	 *
+	 * LayerV URL resources redirect the browser to target_url after
+	 * verification and do not create origin sessions. WordPress therefore
+	 * puts this token on the LayerV target so a successful qURL visit is
+	 * distinguishable from a direct hit.
+	 *
+	 * @param int $post_id Page ID.
+	 * @return string
+	 */
+	public static function ensure_admit_token( $post_id ) {
+		$post_id = absint( $post_id );
+		if ( ! $post_id ) {
+			return '';
+		}
+
+		$stored = (string) get_post_meta( $post_id, self::META_ADMIT, true );
+		if ( preg_match( '/^[A-Za-z0-9]{24,64}$/', $stored ) ) {
+			return $stored;
+		}
+
+		$token = wp_generate_password( 32, false, false );
+		update_post_meta( $post_id, self::META_ADMIT, $token );
+		return $token;
+	}
+
+	/**
+	 * Replace the admit token so a leaked /qurl-in/ URL stops working.
+	 *
+	 * @param int $post_id Page ID.
+	 * @return string
+	 */
+	public static function rotate_admit_token( $post_id ) {
+		$post_id = absint( $post_id );
+		if ( ! $post_id ) {
+			return '';
+		}
+
+		delete_post_meta( $post_id, self::META_ADMIT );
+		return self::ensure_admit_token( $post_id );
+	}
+
+	/**
+	 * LayerV target URL that includes the admit token.
+	 *
+	 * Query strings are stripped on URL-type LayerV redirects, so the
+	 * token is a path segment instead of a query argument.
+	 *
+	 * @param int $post_id Page ID.
+	 * @return string
+	 */
+	public static function admit_target_url( $post_id ) {
+		$token = self::ensure_admit_token( $post_id );
+		if ( ! $token ) {
+			return '';
+		}
+
+		return untrailingslashit( home_url( '/' . Grant::ADMIT_PATH . '/' . $token ) );
+	}
+
+	/**
+	 * Find a protected page whose admit token matches.
+	 *
+	 * @param string $token Admit token.
+	 * @return int
+	 */
+	public static function page_id_for_admit_token( $token ) {
+		$token = sanitize_text_field( $token );
+		if ( ! preg_match( '/^[A-Za-z0-9]{24,64}$/', $token ) ) {
+			return 0;
+		}
+
+		$found = get_posts(
+			array(
+				'post_type'              => 'page',
+				'post_status'            => 'publish',
+				'meta_key'               => self::META_ADMIT,
+				'meta_value'             => $token,
+				'posts_per_page'         => 1,
+				'fields'                 => 'ids',
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => false,
+				'update_post_term_cache' => false,
+			)
+		);
+
+		$page_id = absint( $found[0] ?? 0 );
+		if ( ! $page_id ) {
+			return 0;
+		}
+
+		$stored = (string) get_post_meta( $page_id, self::META_ADMIT, true );
+		if ( ! $stored || ! hash_equals( $stored, $token ) ) {
+			return 0;
+		}
+
+		return Page_Meta::is_protected( $page_id ) ? $page_id : 0;
+	}
+
+	/**
+	 * Resolve a LayerV target URL that uses the admit path (or legacy query).
+	 *
+	 * @param string $url Target URL.
+	 * @return int
+	 */
+	public static function page_id_from_admit_url( $url ) {
+		$token = self::token_from_admit_url( $url );
+		return $token ? self::page_id_for_admit_token( $token ) : 0;
+	}
+
+	/**
+	 * Extract an admit token from a target URL.
+	 *
+	 * @param string $url Target URL.
+	 * @return string
+	 */
+	public static function token_from_admit_url( $url ) {
+		$path = (string) wp_parse_url( $url, PHP_URL_PATH );
+		if ( preg_match( '#/' . preg_quote( Grant::ADMIT_PATH, '#' ) . '/([A-Za-z0-9]{24,64})/?$#', $path, $matches ) ) {
+			return $matches[1];
+		}
+
+		$query = (string) wp_parse_url( $url, PHP_URL_QUERY );
+		if ( '' === $query ) {
+			return '';
+		}
+
+		wp_parse_str( $query, $vars );
+		$provided = sanitize_text_field( $vars[ Grant::ADMIT_QUERY ] ?? '' );
+		return preg_match( '/^[A-Za-z0-9]{24,64}$/', $provided ) ? $provided : '';
 	}
 
 	/**
@@ -77,6 +220,15 @@ class Page_Meta {
 			'page',
 			'side',
 			'high'
+		);
+
+		add_meta_box(
+			'wp-qurl-activity',
+			__( 'qURLs for this page', 'wp-qurl' ),
+			array( __CLASS__, 'render_activity_meta_box' ),
+			'page',
+			'normal',
+			'default'
 		);
 	}
 
@@ -105,30 +257,54 @@ class Page_Meta {
 			</label>
 		</p>
 		<p class="description">
-			<?php esc_html_e( 'When enabled, visitors must open a qURL access link before viewing this page. Access is unlocked by matching the visitor IP and browser from LayerV.', 'wp-qurl' ); ?>
+			<?php esc_html_e( 'Hides this page. Only you (when logged in) or someone with a qURL can see it.', 'wp-qurl' ); ?>
 		</p>
-
-		<?php if ( ! Settings::is_webhook_ready() ) : ?>
-			<p class="notice notice-warning inline">
-				<?php esc_html_e( 'A LayerV webhook is recommended so access events are recorded immediately. Without it, WordPress can still unlock via live LayerV sessions.', 'wp-qurl' ); ?>
-			</p>
-		<?php else : ?>
-			<p class="description">
-				<?php esc_html_e( 'LayerV webhook is registered. Create or reissue qURL links for this page from the button below.', 'wp-qurl' ); ?>
-			</p>
-		<?php endif; ?>
 
 		<?php if ( Capabilities::current_user_can_create() && Settings::is_configured() ) : ?>
 			<p>
 				<a href="<?php echo esc_url( $create_url ); ?>" class="button button-secondary" target="_blank" rel="noopener">
-					<?php esc_html_e( 'Create qURL for this page', 'wp-qurl' ); ?>
+					<?php esc_html_e( 'Mint qURL for this page', 'wp-qurl' ); ?>
 				</a>
 			</p>
 			<p class="description">
-				<?php esc_html_e( 'Opens in a new tab with this page pre-filled as the target URL.', 'wp-qurl' ); ?>
+				<?php esc_html_e( 'Opens a new tab ready to make a link for this page. Copy the link when you see it — it only shows once.', 'wp-qurl' ); ?>
 			</p>
 		<?php endif; ?>
 		<?php
+	}
+
+	/**
+	 * Overview of resources and minted qURLs for this page.
+	 *
+	 * @param \WP_Post $post Current page.
+	 */
+	public static function render_activity_meta_box( $post ) {
+		if ( ! self::is_protected( $post->ID ) ) {
+			echo '<p class="description">' . esc_html__( 'Turn on protection above to see links for this page.', 'wp-qurl' ) . '</p>';
+			return;
+		}
+
+		$tokens    = Database::get_tokens_for_page( $post->ID, false );
+		$resources = array();
+
+		foreach ( $tokens as $token ) {
+			$path_id = $token->crid ? $token->crid : $token->resource_id;
+			if ( ! $path_id ) {
+				$path_id = 'local-' . (int) $token->id;
+			}
+			if ( ! isset( $resources[ $path_id ] ) ) {
+				$resources[ $path_id ] = array(
+					'path_id' => $path_id,
+					'tokens'  => array(),
+				);
+			}
+			$resources[ $path_id ]['tokens'][] = $token;
+		}
+
+		$template = WP_QURL_PATH . 'admin/views/page-overview.php';
+		if ( is_readable( $template ) ) {
+			include $template;
+		}
 	}
 
 	/**

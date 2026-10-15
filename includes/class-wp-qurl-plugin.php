@@ -54,8 +54,56 @@ class Plugin {
 		}
 
 		Webhook::instance()->init();
+		add_action( 'template_redirect', array( 'WP_QURL\Grant', 'maybe_handle_admit_path' ), 0 );
 
 		( new Protector() )->init();
+
+		add_action( 'init', array( $this, 'maybe_sync_webhook_url' ), 20 );
+	}
+
+	/**
+	 * Point LayerV at the non-REST receiver after this upgrade.
+	 */
+	public function maybe_sync_webhook_url() {
+		if ( '1.5.2' !== get_option( 'wp_qurl_webhook_endpoint', '' ) ) {
+			if ( ! Settings::is_configured() || ! Settings::is_webhook_registered() ) {
+				update_option( 'wp_qurl_webhook_endpoint', '1.5.2' );
+			} else {
+				$result = ( new Webhook_Manager() )->sync_url();
+				if ( ! empty( $result['success'] ) ) {
+					update_option( 'wp_qurl_webhook_endpoint', '1.5.2' );
+				}
+			}
+		}
+
+		$this->maybe_sync_webhook_events();
+	}
+
+	/**
+	 * Keep LayerV subscribed to the events the access log needs.
+	 */
+	public function maybe_sync_webhook_events() {
+		if ( '1.5.19' === get_option( 'wp_qurl_webhook_events_sync', '' ) ) {
+			return;
+		}
+
+		if ( ! Settings::is_configured() || ! Settings::is_webhook_registered() ) {
+			update_option( 'wp_qurl_webhook_events_sync', '1.5.19' );
+			return;
+		}
+
+		$current = Settings::get_webhook_events();
+		$missing = array_diff( Webhook_Manager::DEFAULT_EVENTS, $current );
+		if ( empty( $missing ) ) {
+			update_option( 'wp_qurl_webhook_events_sync', '1.5.19' );
+			return;
+		}
+
+		$merged = array_values( array_unique( array_merge( $current, Webhook_Manager::DEFAULT_EVENTS ) ) );
+		$result = ( new Webhook_Manager() )->update_events( $merged );
+		if ( ! empty( $result['success'] ) ) {
+			update_option( 'wp_qurl_webhook_events_sync', '1.5.19' );
+		}
 	}
 
 	/**

@@ -174,3 +174,26 @@
 .wp-qurl-webhook-url {
 	margin-bottom: 4px;
 }
+
+.wp-qurl-page-overview__resource {
+	margin: 0 0 1.5em;
+	padding-bottom: 1em;
+	border-bottom: 1px solid #dcdcde;
+}
+
+.wp-qurl-page-overview__resource:last-child {
+	border-bottom: 0;
+	margin-bottom: 0;
+	padding-bottom: 0;
+}
+
+.wp-qurl-page-overview h4 {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 0.75em;
+}
+
+.wp-qurl-page-overview h5 {
+	margin: 1em 0 0.4em;
+}

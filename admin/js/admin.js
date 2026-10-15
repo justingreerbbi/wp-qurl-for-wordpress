@@ -58,9 +58,10 @@
 
 	$( document ).on( 'click', '.wp-qurl-copy', function ( e ) {
 		e.preventDefault();
-		var text = $( this ).data( 'copy' ) || $( this ).closest( 'td, .notice' ).find( '.wp-qurl-link-input' ).val();
+		var $btn = $( this );
+		var text = $btn.attr( 'data-copy' ) || $btn.closest( 'td, .notice, p' ).find( '.wp-qurl-link-input' ).val();
 		if ( text ) {
-			copyToClipboard( text, $( this ) );
+			copyToClipboard( text, $btn );
 		}
 	} );
 }( jQuery ) );

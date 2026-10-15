@@ -54,11 +54,10 @@
 			} );
 		}
 
-		// Restore existing active link on load.
 		apiFetch( '/mint/status?endpoint=' + encodeURIComponent( endpoint ) )
 			.then( function ( data ) {
-				if ( data && data.has_active && data.qurl_link ) {
-					showLink( data.qurl_link );
+				if ( data && data.has_active ) {
+					setStatus( i18n.alreadyGenerated || 'You already have a qURL. Make another if you need a new one.' );
 				}
 			} )
 			.catch( function () {
@@ -67,7 +66,7 @@
 
 		button.addEventListener( 'click', function () {
 			button.disabled = true;
-			setStatus( i18n.generating || 'Generating…' );
+			setStatus( i18n.generating || 'Minting…' );
 
 			apiFetch( '/mint', {
 				method: 'POST',
@@ -96,7 +95,7 @@
 					navigator.clipboard.writeText( linkInput.value ).then( function () {
 						copyBtn.textContent = i18n.copied || 'Copied!';
 						setTimeout( function () {
-							copyBtn.textContent = 'Copy Link';
+							copyBtn.textContent = i18n.copyLabel || 'Copy qURL';
 						}, 2000 );
 					} ).catch( function () {
 						setStatus( i18n.copyFail || 'Copy failed.', true );

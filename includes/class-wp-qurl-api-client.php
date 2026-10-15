@@ -17,38 +17,6 @@ defined( 'ABSPATH' ) || exit;
 class Api_Client {
 
 	/**
-	 * Last API error message.
-	 *
-	 * @var string
-	 */
-	private $last_error = '';
-
-	/**
-	 * Last API response meta.
-	 *
-	 * @var array
-	 */
-	private $last_meta = array();
-
-	/**
-	 * Get the last error message.
-	 *
-	 * @return string
-	 */
-	public function get_last_error() {
-		return $this->last_error;
-	}
-
-	/**
-	 * Get meta from the last response.
-	 *
-	 * @return array
-	 */
-	public function get_last_meta() {
-		return $this->last_meta;
-	}
-
-	/**
 	 * Test API connectivity with stored credentials.
 	 *
 	 * @return array{success: bool, message: string, data?: array}
@@ -65,33 +33,59 @@ class Api_Client {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Connected successfully.', 'wp-qurl' ),
+			'message' => __( 'Your key works.', 'wp-qurl' ),
 			'data'    => $response,
 		);
 	}
 
 	/**
-	 * List qURL resources.
+	 * Get resource details by CRID or resource_id.
 	 *
-	 * @param array $params Query parameters (limit, cursor, status, q, etc.).
+	 * Normalizes ResourceDetailData to a flat ResourceData array for callers.
+	 *
+	 * @param string $id CRID or resource public key.
 	 * @return array|\WP_Error
 	 */
-	public function list_qurls( array $params = array() ) {
-		return $this->get( '/v1/qurls', $params );
+	public function get_resource( $id ) {
+		$data = $this->get( '/v1/resources/' . rawurlencode( $id ) );
+		if ( is_wp_error( $data ) ) {
+			return $data;
+		}
+
+		if ( isset( $data['resource'] ) && is_array( $data['resource'] ) ) {
+			return $data['resource'];
+		}
+
+		return $data;
 	}
 
 	/**
-	 * Get a single qURL resource by ID.
+	 * Create a qURL for an existing resource (recommended multi-link path).
 	 *
-	 * @param string $id Resource or qURL display ID.
+	 * @param string $resource_id CRID or resource public key.
+	 * @param array  $body        Request body per CreateQurlForResourceRequest.
 	 * @return array|\WP_Error
 	 */
-	public function get_qurl( $id ) {
-		return $this->get( '/v1/qurls/' . rawurlencode( $id ) );
+	public function create_resource_qurl( $resource_id, array $body = array() ) {
+		$allowed = array(
+			'expires_in',
+			'one_time_use',
+			'max_sessions',
+			'session_duration',
+			'access_policy',
+			'label',
+			'target_path',
+		);
+
+		return $this->post(
+			'/v1/resources/' . rawurlencode( $resource_id ) . '/qurls',
+			array_intersect_key( $body, array_flip( $allowed ) ),
+			true
+		);
 	}
 
 	/**
-	 * Create a new qURL.
+	 * Create a resource and its first access link from a target URL.
 	 *
 	 * @param array $body Request body per CreateQurlRequest schema.
 	 * @return array|\WP_Error
@@ -113,80 +107,50 @@ class Api_Client {
 	}
 
 	/**
-	 * Mint a new access link for an existing resource.
+	 * Update a specific qURL (extend expiry, label, sessions, etc.).
 	 *
-	 * @param string $resource_id Resource ID (r_ prefix).
-	 * @param array  $body        Optional mint parameters.
+	 * @param string $resource_id CRID or resource public key.
+	 * @param string $qurl_id     qURL display ID.
+	 * @param array  $body        UpdateQurlTokenRequest fields.
 	 * @return array|\WP_Error
 	 */
-	public function mint_link( $resource_id, array $body = array() ) {
-		return $this->post( '/v1/qurls/' . rawurlencode( $resource_id ) . '/mint_link', $body, true );
+	public function update_qurl_token( $resource_id, $qurl_id, array $body ) {
+		$allowed = array(
+			'extend_by',
+			'expires_at',
+			'label',
+			'access_policy',
+			'max_sessions',
+			'session_duration',
+		);
+
+		return $this->patch(
+			'/v1/resources/' . rawurlencode( $resource_id ) . '/qurls/' . rawurlencode( $qurl_id ),
+			array_intersect_key( $body, array_flip( $allowed ) ),
+			true
+		);
 	}
 
 	/**
 	 * Revoke a resource and all its qURLs.
 	 *
-	 * @param string $resource_id Resource ID.
+	 * @param string $resource_id CRID or resource public key.
 	 * @return true|\WP_Error
 	 */
-	public function delete_qurl( $resource_id ) {
-		return $this->delete( '/v1/qurls/' . rawurlencode( $resource_id ) );
-	}
-
-	/**
-	 * List qURLs for a specific resource.
-	 *
-	 * @param string $resource_id Resource ID.
-	 * @param array  $params      Pagination params.
-	 * @return array|\WP_Error
-	 */
-	public function list_resource_qurls( $resource_id, array $params = array() ) {
-		return $this->get( '/v1/resources/' . rawurlencode( $resource_id ) . '/qurls', $params );
+	public function delete_resource( $resource_id ) {
+		return $this->delete( '/v1/resources/' . rawurlencode( $resource_id ) );
 	}
 
 	/**
 	 * Revoke a single qURL token.
 	 *
-	 * @param string $resource_id Resource ID.
+	 * @param string $resource_id CRID or resource public key.
 	 * @param string $qurl_id     qURL display ID.
 	 * @return true|\WP_Error
 	 */
 	public function revoke_qurl_token( $resource_id, $qurl_id ) {
 		return $this->delete(
 			'/v1/resources/' . rawurlencode( $resource_id ) . '/qurls/' . rawurlencode( $qurl_id )
-		);
-	}
-
-	/**
-	 * List active sessions for a resource (access log).
-	 *
-	 * @param string $resource_id Resource ID.
-	 * @return array|\WP_Error
-	 */
-	public function list_sessions( $resource_id ) {
-		return $this->get( '/v1/resources/' . rawurlencode( $resource_id ) . '/sessions' );
-	}
-
-	/**
-	 * Terminate all active sessions for a resource.
-	 *
-	 * @param string $resource_id Resource ID.
-	 * @return array|\WP_Error
-	 */
-	public function terminate_all_sessions( $resource_id ) {
-		return $this->delete( '/v1/resources/' . rawurlencode( $resource_id ) . '/sessions', true );
-	}
-
-	/**
-	 * Terminate a specific session.
-	 *
-	 * @param string $resource_id Resource ID.
-	 * @param string $session_id  Session ID.
-	 * @return true|\WP_Error
-	 */
-	public function terminate_session( $resource_id, $session_id ) {
-		return $this->delete(
-			'/v1/resources/' . rawurlencode( $resource_id ) . '/sessions/' . rawurlencode( $session_id )
 		);
 	}
 
@@ -339,7 +303,7 @@ class Api_Client {
 	 */
 	private function delete( $path, $return_body = false ) {
 		$url      = $this->build_url( $path );
-		$response = $this->request( 'DELETE', $url, null, array(), $return_body );
+		$response = $this->request( 'DELETE', $url, null, array(), true );
 
 		if ( is_wp_error( $response ) ) {
 			return $response;
@@ -359,13 +323,12 @@ class Api_Client {
 	 * @return array|\WP_Error
 	 */
 	private function request( $method, $url, $body = null, array $extra_headers = array(), $allow_empty = false ) {
-		$this->last_error = '';
-		$this->last_meta  = array();
-
 		$api_key = Settings::get_api_key();
 		if ( '' === $api_key ) {
-			$this->last_error = __( 'API key is not configured.', 'wp-qurl' );
-			return new \WP_Error( 'wp_qurl_not_configured', $this->last_error );
+			return new \WP_Error(
+				'wp_qurl_not_configured',
+				__( 'Add your API key in Settings first.', 'wp-qurl' )
+			);
 		}
 
 		$headers = array_merge(
@@ -391,44 +354,44 @@ class Api_Client {
 		$response = wp_remote_request( $url, $args );
 
 		if ( is_wp_error( $response ) ) {
-			$this->last_error = $response->get_error_message();
 			return $response;
 		}
 
-		$code    = wp_remote_retrieve_response_code( $response );
+		$code    = (int) wp_remote_retrieve_response_code( $response );
 		$raw     = wp_remote_retrieve_body( $response );
 		$decoded = json_decode( $raw, true );
 
-		// Handle rate limiting.
 		if ( 429 === $code ) {
-			$retry            = wp_remote_retrieve_header( $response, 'retry-after' );
-			$this->last_error = sprintf(
-				/* translators: %s: seconds until retry */
-				__( 'Rate limit exceeded. Retry after %s seconds.', 'wp-qurl' ),
-				$retry ? $retry : '?'
+			$retry = wp_remote_retrieve_header( $response, 'retry-after' );
+			return new \WP_Error(
+				'wp_qurl_rate_limit',
+				sprintf(
+					/* translators: %s: seconds until retry */
+					__( 'Rate limit exceeded. Retry after %s seconds.', 'wp-qurl' ),
+					$retry ? $retry : '?'
+				),
+				array(
+					'status'      => 429,
+					'retry_after' => $retry,
+				)
 			);
-			return new \WP_Error( 'wp_qurl_rate_limit', $this->last_error, array( 'retry_after' => $retry ) );
 		}
 
-		// Success with no body (204).
-		if ( $allow_empty && ( 204 === $code || 200 === $code ) && ( '' === $raw || null === $decoded ) ) {
+		if ( 204 === $code || 304 === $code ) {
+			return array();
+		}
+
+		if ( $allow_empty && 200 === $code && ( '' === $raw || null === $decoded ) ) {
 			return array();
 		}
 
 		if ( $code >= 200 && $code < 300 ) {
-			if ( isset( $decoded['meta'] ) ) {
-				$this->last_meta = $decoded['meta'];
-			}
-			return isset( $decoded['data'] ) ? $decoded['data'] : $decoded;
+			return is_array( $decoded ) && isset( $decoded['data'] ) ? $decoded['data'] : $decoded;
 		}
 
-		// Parse RFC 7807 error envelope.
-		$detail = '';
-		if ( isset( $decoded['error']['detail'] ) ) {
-			$detail = $decoded['error']['detail'];
-		} elseif ( isset( $decoded['error']['title'] ) ) {
-			$detail = $decoded['error']['title'];
-		} else {
+		$error  = is_array( $decoded ) && isset( $decoded['error'] ) && is_array( $decoded['error'] ) ? $decoded['error'] : array();
+		$detail = $error['detail'] ?? ( $error['title'] ?? '' );
+		if ( '' === $detail ) {
 			$detail = sprintf(
 				/* translators: %d: HTTP status code */
 				__( 'API request failed with status %d.', 'wp-qurl' ),
@@ -436,14 +399,14 @@ class Api_Client {
 			);
 		}
 
-		$this->last_error = $detail;
-
 		return new \WP_Error(
 			'wp_qurl_api_error',
 			$detail,
 			array(
-				'status' => $code,
-				'body'   => $decoded,
+				'status'      => $code,
+				'error_code'  => sanitize_key( $error['code'] ?? '' ),
+				'retry_after' => wp_remote_retrieve_header( $response, 'retry-after' ),
+				'body'        => $decoded,
 			)
 		);
 	}

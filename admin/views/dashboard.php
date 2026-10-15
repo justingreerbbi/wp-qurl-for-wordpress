@@ -9,7 +9,6 @@
  * @var array  $status_counts   Row counts by status.
  * @var array  $status_labels   Human-readable status filter labels.
  * @var int    $total_row_count Total rows before filtering.
- * @var string $api_error       API error message if any.
  * @var bool   $configured      Whether API key is set.
  */
 
@@ -18,10 +17,10 @@ defined( 'ABSPATH' ) || exit;
 $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 ?>
 <div class="wrap wp-qurl-wrap">
-	<h1 class="wp-heading-inline"><?php esc_html_e( 'qURL Dashboard', 'wp-qurl' ); ?></h1>
+	<h1 class="wp-heading-inline"><?php esc_html_e( 'qURLs', 'wp-qurl' ); ?></h1>
 	<?php if ( $configured ) : ?>
 		<a href="<?php echo esc_url( admin_url( 'admin.php?page=wp-qurl-create' ) ); ?>" class="page-title-action">
-			<?php esc_html_e( 'Create qURL', 'wp-qurl' ); ?>
+			<?php esc_html_e( 'Mint qURL', 'wp-qurl' ); ?>
 		</a>
 	<?php endif; ?>
 	<hr class="wp-header-end">
@@ -32,7 +31,7 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 				<?php
 				printf(
 					/* translators: %s: settings page URL */
-					esc_html__( 'LayerV API is not configured. Please add your API key in %s.', 'wp-qurl' ),
+					esc_html__( 'Add your API key in %s to get started.', 'wp-qurl' ),
 					'<a href="' . esc_url( admin_url( 'admin.php?page=wp-qurl-settings' ) ) . '">' . esc_html__( 'Settings', 'wp-qurl' ) . '</a>'
 				);
 				?>
@@ -40,13 +39,9 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 		</div>
 	<?php endif; ?>
 
-	<?php if ( $api_error ) : ?>
-		<div class="notice notice-error"><p><?php echo esc_html( $api_error ); ?></p></div>
-	<?php endif; ?>
-
-	<h2><?php esc_html_e( 'Protected URLs', 'wp-qurl' ); ?></h2>
+	<h2><?php esc_html_e( 'Protected Resources', 'wp-qurl' ); ?></h2>
 	<p class="description">
-		<?php esc_html_e( 'Resources from your LayerV account, grouped by target URL. Portal links created in WordPress are stored locally because the API returns them only once.', 'wp-qurl' ); ?>
+		<?php esc_html_e( 'Resources you have protected. Links only show when you create them.', 'wp-qurl' ); ?>
 	</p>
 
 	<?php if ( $total_row_count > 0 ) : ?>
@@ -73,10 +68,10 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 
 	<?php if ( 0 === $total_row_count ) : ?>
 		<div class="wp-qurl-empty-state">
-			<p><?php esc_html_e( 'No qURLs yet. Create your first secure access link.', 'wp-qurl' ); ?></p>
+			<p><?php esc_html_e( 'Nothing here yet. Make a qURL to get started.', 'wp-qurl' ); ?></p>
 			<?php if ( $configured ) : ?>
 				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=wp-qurl-create' ) ); ?>">
-					<?php esc_html_e( 'Create qURL', 'wp-qurl' ); ?>
+					<?php esc_html_e( 'Mint qURL', 'wp-qurl' ); ?>
 				</a>
 			<?php endif; ?>
 		</div>
@@ -87,17 +82,17 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 				if ( '' !== $status_filter && isset( $status_labels[ $status_filter ] ) ) {
 					printf(
 						/* translators: %s: status label */
-						esc_html__( 'No protected URLs match the "%s" filter.', 'wp-qurl' ),
+						esc_html__( 'Nothing matches “%s”.', 'wp-qurl' ),
 						esc_html( $status_labels[ $status_filter ] )
 					);
 				} else {
-					esc_html_e( 'No protected URLs match the selected filter.', 'wp-qurl' );
+					esc_html_e( 'Nothing matches this filter.', 'wp-qurl' );
 				}
 				?>
 			</p>
 			<p>
 				<a href="<?php echo esc_url( add_query_arg( 'status', '', $dashboard_base ) ); ?>">
-					<?php esc_html_e( 'Show all protected URLs', 'wp-qurl' ); ?>
+					<?php esc_html_e( 'Show all', 'wp-qurl' ); ?>
 				</a>
 			</p>
 		</div>
@@ -105,8 +100,7 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 		<table class="wp-list-table widefat fixed striped wp-qurl-table">
 			<thead>
 				<tr>
-					<th scope="col"><?php esc_html_e( 'Target URL', 'wp-qurl' ); ?></th>
-					<th scope="col"><?php esc_html_e( 'Resource ID', 'wp-qurl' ); ?></th>
+					<th scope="col"><?php esc_html_e( 'Page', 'wp-qurl' ); ?></th>
 					<th scope="col"><?php esc_html_e( 'Status', 'wp-qurl' ); ?></th>
 					<th scope="col"><?php esc_html_e( 'qURLs', 'wp-qurl' ); ?></th>
 					<th scope="col"><?php esc_html_e( 'Expires', 'wp-qurl' ); ?></th>
@@ -116,11 +110,11 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 			<tbody>
 				<?php foreach ( $rows as $res ) : ?>
 					<?php
-					$resource_id = $res['resource_id'] ?? '';
-					$detail_url  = add_query_arg(
+					$path_id = $res['path_id'] ?? '';
+					$detail_url = add_query_arg(
 						array(
 							'page'        => 'wp-qurl-resource',
-							'resource_id' => $resource_id,
+							'resource_id' => $path_id,
 						),
 						admin_url( 'admin.php' )
 					);
@@ -136,7 +130,6 @@ $dashboard_base = admin_url( 'admin.php?page=wp-qurl' );
 								<br><span class="description"><?php echo esc_html( $res['description'] ); ?></span>
 							<?php endif; ?>
 						</td>
-						<td><code><?php echo esc_html( $resource_id ); ?></code></td>
 						<td>
 							<span class="wp-qurl-status wp-qurl-status--<?php echo esc_attr( $res['status'] ?? 'unknown' ); ?>">
 								<?php echo esc_html( ucfirst( $res['status'] ?? 'unknown' ) ); ?>

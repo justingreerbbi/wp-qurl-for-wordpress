@@ -60,16 +60,16 @@ class Blocks {
 	public function render_block( $attributes, $content, $block ) {
 		$endpoint        = isset( $attributes['endpoint'] ) ? sanitize_text_field( $attributes['endpoint'] ) : '';
 		$allow_visitors  = ! empty( $attributes['allowVisitors'] );
-		$button_text     = isset( $attributes['buttonText'] ) ? sanitize_text_field( $attributes['buttonText'] ) : __( 'Generate Access Link', 'wp-qurl' );
-		$success_text    = isset( $attributes['successMessage'] ) ? sanitize_text_field( $attributes['successMessage'] ) : __( 'Your one-time access link:', 'wp-qurl' );
-		$login_text      = isset( $attributes['loginMessage'] ) ? sanitize_text_field( $attributes['loginMessage'] ) : __( 'Log in to generate your personal access link.', 'wp-qurl' );
+		$button_text     = isset( $attributes['buttonText'] ) ? sanitize_text_field( $attributes['buttonText'] ) : __( 'Mint qURL', 'wp-qurl' );
+		$success_text    = isset( $attributes['successMessage'] ) ? sanitize_text_field( $attributes['successMessage'] ) : __( 'Your qURL:', 'wp-qurl' );
+		$login_text      = isset( $attributes['loginMessage'] ) ? sanitize_text_field( $attributes['loginMessage'] ) : __( 'Log in to get your qURL.', 'wp-qurl' );
 
 		if ( '' === $endpoint ) {
-			return '<div class="wp-qurl-mint wp-qurl-mint--misconfigured"><p>' . esc_html__( 'Configure an endpoint in the block settings.', 'wp-qurl' ) . '</p></div>';
+			return '<div class="wp-qurl-mint wp-qurl-mint--misconfigured"><p>' . esc_html__( 'Choose a page in the block settings.', 'wp-qurl' ) . '</p></div>';
 		}
 
 		if ( ! Settings::is_configured() ) {
-			return '<div class="wp-qurl-mint wp-qurl-mint--misconfigured"><p>' . esc_html__( 'qURL is not configured on this site.', 'wp-qurl' ) . '</p></div>';
+			return '<div class="wp-qurl-mint wp-qurl-mint--misconfigured"><p>' . esc_html__( 'Add an API key in qURLs → Settings first.', 'wp-qurl' ) . '</p></div>';
 		}
 
 		if ( ! is_user_logged_in() ) {
@@ -78,7 +78,7 @@ class Blocks {
 				return '<div class="wp-qurl-mint wp-qurl-mint--logged-out"><p>' . esc_html( $login_text ) . '</p><p><a class="button" href="' . esc_url( $login_url ) . '">' . esc_html__( 'Log in', 'wp-qurl' ) . '</a></p></div>';
 			}
 		} elseif ( ! Capabilities::current_user_can_mint_self() ) {
-			return '<div class="wp-qurl-mint wp-qurl-mint--forbidden"><p>' . esc_html__( 'You do not have permission to generate qURL links.', 'wp-qurl' ) . '</p></div>';
+			return '<div class="wp-qurl-mint wp-qurl-mint--forbidden"><p>' . esc_html__( 'You cannot make a qURL.', 'wp-qurl' ) . '</p></div>';
 		}
 
 		return self::render_mint_markup( $endpoint, $button_text, $success_text );
@@ -114,7 +114,7 @@ class Blocks {
 			<div class="wp-qurl-mint__result" hidden>
 				<p class="wp-qurl-mint__success-label"><?php echo esc_html( $success_text ); ?></p>
 				<input type="text" class="wp-qurl-mint__link" readonly />
-				<button type="button" class="wp-qurl-mint__copy button button-secondary"><?php esc_html_e( 'Copy Link', 'wp-qurl' ); ?></button>
+				<button type="button" class="wp-qurl-mint__copy button button-secondary"><?php esc_html_e( 'Copy qURL', 'wp-qurl' ); ?></button>
 			</div>
 		</div>
 		<?php
@@ -293,10 +293,12 @@ class Blocks {
 				'restUrl' => rest_url( Public_Rest::REST_NAMESPACE ),
 				'nonce'   => wp_create_nonce( 'wp_rest' ),
 				'i18n'    => array(
-					'generating' => __( 'Generating…', 'wp-qurl' ),
-					'error'      => __( 'Could not generate link. Please try again.', 'wp-qurl' ),
+					'generating'       => __( 'Minting…', 'wp-qurl' ),
+					'alreadyGenerated' => __( 'You already have a qURL. Make another if you need a new one.', 'wp-qurl' ),
+					'error'            => __( 'Could not make a qURL. Try again.', 'wp-qurl' ),
 					'copied'     => __( 'Copied!', 'wp-qurl' ),
 					'copyFail'   => __( 'Copy failed.', 'wp-qurl' ),
+					'copyLabel'  => __( 'Copy qURL', 'wp-qurl' ),
 				),
 			)
 		);

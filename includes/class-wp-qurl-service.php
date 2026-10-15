@@ -39,7 +39,7 @@ class Service {
 	}
 
 	/**
-	 * Create a qURL and store the portal link locally.
+	 * Mint a qURL and store a local record (the qURL itself is not persisted).
 	 *
 	 * @param array  $args    Mint arguments (target_url required).
 	 * @param string $context Mint context constant.
@@ -49,7 +49,7 @@ class Service {
 		if ( ! Settings::is_configured() ) {
 			return new \WP_Error(
 				'wp_qurl_not_configured',
-				__( 'LayerV API is not configured.', 'wp-qurl' )
+				__( 'Add your API key in Settings first.', 'wp-qurl' ),
 			);
 		}
 
@@ -81,15 +81,7 @@ class Service {
 			return $preempt;
 		}
 
-		$clean_target = $args['target_url'];
-		$page_id      = self::resolve_protected_page_id( $clean_target );
-		if ( $page_id ) {
-			$canonical_target = get_permalink( $page_id );
-			if ( $canonical_target ) {
-				$clean_target       = self::normalize_target_url( $canonical_target );
-				$args['target_url'] = $clean_target;
-			}
-		}
+		$page_id = self::resolve_protected_page_id( $args['target_url'] );
 
 		$body = array(
 			'type'             => 'url',
@@ -109,12 +101,106 @@ class Service {
 			return $result;
 		}
 
+		return $this->store_mint_result( $result, $args, $context, $page_id );
+	}
+
+	/**
+	 * Mint an additional qURL for an existing resource.
+	 *
+	 * Uses POST /v1/resources/{id}/qurls (recommended for multi-link remint).
+	 *
+	 * @param string $resource_id CRID or resource public key.
+	 * @param array  $args        Mint arguments (target_url required for local storage).
+	 * @param string $context     Mint context constant.
+	 * @return array|\WP_Error
+	 */
+	public function mint_for_resource( $resource_id, array $args, $context = self::CONTEXT_ADMIN ) {
+		if ( ! Settings::is_configured() ) {
+			return new \WP_Error(
+				'wp_qurl_not_configured',
+				__( 'Add your API key in Settings first.', 'wp-qurl' ),
+			);
+		}
+
+		$path_id = Database::resource_id( $resource_id );
+		if ( '' === $path_id ) {
+			return new \WP_Error(
+				'wp_qurl_invalid_resource',
+				__( 'Resource ID is required.', 'wp-qurl' )
+			);
+		}
+
+		$args               = $this->prepare_args( $args, $context );
+		$args['target_url'] = self::normalize_target_url( $args['target_url'] );
+
+		/**
+		 * Filter mint arguments before validation and API call.
+		 *
+		 * @param array  $args    Prepared mint arguments.
+		 * @param string $context Mint context.
+		 */
+		$args = apply_filters( 'wp_qurl_mint_args', $args, $context );
+
+		$validation = $this->validate_args( $args, $context );
+		if ( is_wp_error( $validation ) ) {
+			return $validation;
+		}
+
+		/**
+		 * Short-circuit minting.
+		 *
+		 * @param null|\WP_Error|array $preempt  Return non-null to bypass mint.
+		 * @param array                $args     Mint arguments.
+		 * @param string               $context  Mint context.
+		 */
+		$preempt = apply_filters( 'wp_qurl_pre_mint', null, $args, $context );
+		if ( null !== $preempt ) {
+			return $preempt;
+		}
+
+		$page_id = self::resolve_protected_page_id( $args['target_url'] );
+
+		$body = array(
+			'expires_in'       => $args['expires_in'],
+			'session_duration' => $args['session_duration'],
+			'one_time_use'     => (bool) $args['one_time_use'],
+			'max_sessions'     => (int) $args['max_sessions'],
+		);
+
+		if ( ! empty( $args['label'] ) ) {
+			$body['label'] = $args['label'];
+		}
+
+		$result = $this->api->create_resource_qurl( $path_id, $body );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		if ( empty( $result['crid'] ) ) {
+			$result['crid'] = $path_id;
+		}
+
+		return $this->store_mint_result( $result, $args, $context, $page_id );
+	}
+
+	/**
+	 * Persist a LayerV mint response as a local token row.
+	 *
+	 * @param array  $result  LayerV create/mint response data.
+	 * @param array  $args    Mint arguments used.
+	 * @param string $context Mint context.
+	 * @param int    $page_id Protected page ID when applicable.
+	 * @return array|\WP_Error
+	 */
+	private function store_mint_result( array $result, array $args, $context, $page_id = 0 ) {
 		$token_id = Database::insert_token(
 			array(
 				'resource_id' => $result['resource_id'] ?? '',
+				'crid'        => $result['crid'] ?? '',
 				'qurl_id'     => $result['qurl_id'] ?? '',
 				'target_url'  => $args['target_url'],
-				'qurl_link'   => $result['qurl_link'] ?? '',
+				'qurl_site'   => '',
+				'qurl_link'   => '',
 				'label'       => $result['label'] ?? $args['label'],
 				'description' => $args['description'],
 				'expires_at'  => self::format_storage_datetime( $result['expires_at'] ?? '' ),
@@ -125,8 +211,6 @@ class Service {
 					array(
 						'context'          => $context,
 						'type'             => $result['type'] ?? 'url',
-						'qurl_site'        => $result['qurl_site'] ?? '',
-						'branded_domain'   => $result['branded_domain'] ?? '',
 						'session_duration' => self::duration_to_seconds( $args['session_duration'] ),
 						'page_id'          => $page_id ? (int) $page_id : 0,
 					)
@@ -138,13 +222,14 @@ class Service {
 			$this->revoke_failed_mint( $result );
 			return new \WP_Error(
 				'wp_qurl_store_failed',
-				__( 'qURL was created but could not be saved locally.', 'wp-qurl' )
+				__( 'The qURL was created but could not be saved here. Try again.', 'wp-qurl' )
 			);
 		}
 
 		$response = array(
 			'token_id'       => $token_id,
 			'resource_id'    => $result['resource_id'] ?? '',
+			'crid'           => $result['crid'] ?? '',
 			'qurl_id'        => $result['qurl_id'] ?? '',
 			'qurl_link'      => $result['qurl_link'] ?? '',
 			'qurl_site'      => $result['qurl_site'] ?? '',
@@ -178,11 +263,11 @@ class Service {
 	 * @param array $result LayerV create response data.
 	 */
 	private function revoke_failed_mint( array $result ) {
-		$resource_id = sanitize_text_field( $result['resource_id'] ?? '' );
-		$qurl_id     = sanitize_text_field( $result['qurl_id'] ?? '' );
+		$path_id = Database::resource_id( $result['crid'] ?? ( $result['resource_id'] ?? '' ) );
+		$qurl_id = sanitize_text_field( $result['qurl_id'] ?? '' );
 
-		if ( '' !== $resource_id && '' !== $qurl_id ) {
-			$this->api->revoke_qurl_token( $resource_id, $qurl_id );
+		if ( $path_id && $qurl_id ) {
+			$this->api->revoke_qurl_token( $path_id, $qurl_id );
 		}
 	}
 
@@ -197,7 +282,7 @@ class Service {
 		if ( '' === $endpoint ) {
 			return new \WP_Error(
 				'wp_qurl_invalid_endpoint',
-				__( 'Endpoint is required.', 'wp-qurl' )
+				__( 'Choose a page first.', 'wp-qurl' )
 			);
 		}
 
@@ -211,7 +296,7 @@ class Service {
 		if ( ! wp_http_validate_url( $url ) ) {
 			return new \WP_Error(
 				'wp_qurl_invalid_endpoint',
-				__( 'Endpoint must resolve to a valid URL.', 'wp-qurl' )
+				__( 'That page URL is not valid.', 'wp-qurl' )
 			);
 		}
 
@@ -226,7 +311,7 @@ class Service {
 		if ( ! self::is_endpoint_allowed( $url ) ) {
 			return new \WP_Error(
 				'wp_qurl_endpoint_forbidden',
-				__( 'This endpoint is not allowed for qURL minting.', 'wp-qurl' )
+				__( 'That page is not allowed.', 'wp-qurl' )
 			);
 		}
 
@@ -306,7 +391,7 @@ class Service {
 
 			if ( ! empty( $args['meta']['guest_mint'] ) ) {
 				$defaults['created_by'] = 0;
-				$defaults['label']      = __( 'Self-service visitor link', 'wp-qurl' );
+				$defaults['label']      = __( 'Visitor qURL', 'wp-qurl' );
 				$defaults['meta']       = array(
 					'source'     => 'frontend_block',
 					'guest_mint' => true,
@@ -315,9 +400,8 @@ class Service {
 				$defaults['label'] = $user->exists()
 					? sprintf(
 						/* translators: 1: user display name, 2: user ID */
-						__( 'Self-service link for %1$s (user #%2$d)', 'wp-qurl' ),
-						$user->display_name,
-						$user->ID
+						__( 'qURL for %s', 'wp-qurl' ),
+						$user->display_name
 					)
 					: '';
 				$defaults['meta'] = array(
@@ -344,7 +428,7 @@ class Service {
 		) {
 			return new \WP_Error(
 				'wp_qurl_invalid_url',
-				__( 'A valid HTTPS target URL is required.', 'wp-qurl' )
+				__( 'Enter a page URL that starts with https://.', 'wp-qurl' )
 			);
 		}
 
@@ -355,14 +439,14 @@ class Service {
 				if ( ! Blocks::endpoint_allows_visitors( $args['meta']['endpoint'] ?? '' ) ) {
 					return new \WP_Error(
 						'wp_qurl_forbidden',
-						__( 'Visitor access is not enabled for this endpoint.', 'wp-qurl' ),
+						__( 'Visitors cannot make a link for this page.', 'wp-qurl' ),
 						array( 'status' => 403 )
 					);
 				}
 			} elseif ( ! Capabilities::current_user_can_mint_self() ) {
 				return new \WP_Error(
 					'wp_qurl_forbidden',
-					__( 'You are not allowed to generate qURL links.', 'wp-qurl' ),
+					__( 'You cannot make a qURL.', 'wp-qurl' ),
 					array( 'status' => 403 )
 				);
 			}
@@ -370,7 +454,7 @@ class Service {
 			if ( ! self::is_endpoint_allowed( $args['target_url'] ) ) {
 				return new \WP_Error(
 					'wp_qurl_endpoint_forbidden',
-					__( 'This endpoint is not allowed.', 'wp-qurl' ),
+					__( 'That page is not allowed.', 'wp-qurl' ),
 					array( 'status' => 403 )
 				);
 			}
@@ -391,6 +475,26 @@ class Service {
 	 * @return int
 	 */
 	public static function resolve_protected_page_id( $target_url ) {
+		$page_id = self::resolve_page_id( $target_url );
+		if ( ! $page_id || ! Page_Meta::is_protected( $page_id ) ) {
+			return 0;
+		}
+
+		return (int) $page_id;
+	}
+
+	/**
+	 * Resolve a target URL to a WordPress page ID.
+	 *
+	 * @param string $target_url Target URL.
+	 * @return int
+	 */
+	public static function resolve_page_id( $target_url ) {
+		$admit_page = Page_Meta::page_id_from_admit_url( $target_url );
+		if ( $admit_page ) {
+			return $admit_page;
+		}
+
 		$target_url = self::normalize_target_url( $target_url );
 		if ( '' === $target_url ) {
 			return 0;
@@ -405,14 +509,31 @@ class Service {
 		if ( isset( $parts['port'] ) ) {
 			$clean_url .= ':' . absint( $parts['port'] );
 		}
-		$clean_url .= $parts['path'] ?? '/';
+		$path       = $parts['path'] ?? '/';
+		$candidates = array_unique(
+			array(
+				$clean_url . $path,
+				untrailingslashit( $clean_url . $path ),
+				trailingslashit( $clean_url . $path ),
+			)
+		);
 
-		$page_id = url_to_postid( $clean_url );
-		if ( ! $page_id || 'page' !== get_post_type( $page_id ) || ! Page_Meta::is_protected( $page_id ) ) {
-			return 0;
+		foreach ( $candidates as $candidate ) {
+			$page_id = url_to_postid( $candidate );
+			if ( $page_id && 'page' === get_post_type( $page_id ) ) {
+				return (int) $page_id;
+			}
 		}
 
-		return (int) $page_id;
+		$slug = trim( (string) $path, '/' );
+		if ( '' !== $slug ) {
+			$page = get_page_by_path( $slug );
+			if ( $page && 'page' === $page->post_type ) {
+				return (int) $page->ID;
+			}
+		}
+
+		return 0;
 	}
 
 	/**
@@ -457,19 +578,64 @@ class Service {
 	}
 
 	/**
-	 * Parse a date/time value received from the LayerV API.
+	 * Parse a date/time value from LayerV or local UTC storage.
 	 *
-	 * @param mixed $value API date/time value.
+	 * Naive MySQL datetimes are treated as UTC because the plugin stores
+	 * timestamps that way. Values with an offset or Z suffix keep that zone.
+	 *
+	 * @param mixed $value API or MySQL date/time value.
 	 * @return int|null Unix timestamp or null when invalid.
 	 */
 	public static function parse_api_datetime( $value ) {
-		if ( ! is_scalar( $value ) || '' === trim( (string) $value ) ) {
+		if ( is_int( $value ) || is_float( $value ) ) {
+			$ts = (int) $value;
+			if ( $ts > 9999999999 ) {
+				$ts = (int) floor( $ts / 1000 );
+			}
+			return $ts > 0 ? $ts : null;
+		}
+
+		if ( ! is_scalar( $value ) ) {
 			return null;
 		}
 
-		$timestamp = strtotime( (string) $value );
+		$value = trim( (string) $value );
+		if ( '' === $value ) {
+			return null;
+		}
 
-		return false === $timestamp ? null : $timestamp;
+		if ( preg_match( '/^\d{10,13}$/', $value ) ) {
+			$ts = (int) $value;
+			if ( $ts > 9999999999 ) {
+				$ts = (int) floor( $ts / 1000 );
+			}
+			return $ts > 0 ? $ts : null;
+		}
+
+		if ( preg_match( '/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/', $value ) ) {
+			$normalized = str_replace( 'T', ' ', $value );
+			$dt         = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $normalized, new \DateTimeZone( 'UTC' ) );
+			$errors     = \DateTimeImmutable::getLastErrors();
+			if ( $dt && ( false === $errors || ( empty( $errors['warning_count'] ) && empty( $errors['error_count'] ) ) ) ) {
+				return $dt->getTimestamp();
+			}
+		}
+
+		try {
+			return ( new \DateTimeImmutable( $value ) )->getTimestamp();
+		} catch ( \Exception $e ) {
+			$timestamp = strtotime( $value );
+			return false === $timestamp ? null : $timestamp;
+		}
+	}
+
+	/**
+	 * Combined WordPress date and time format from Settings → General.
+	 *
+	 * @return string
+	 */
+	public static function site_datetime_format() {
+		return trim( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ) );
 	}
 
 	/**
@@ -485,17 +651,90 @@ class Service {
 	}
 
 	/**
-	 * Format an API date/time for display in the site's timezone.
+	 * Format a stored or API date/time in the site timezone.
 	 *
-	 * @param mixed  $value    API date/time value.
-	 * @param string $format   WordPress date format.
+	 * @param mixed  $value    API or MySQL date/time value.
+	 * @param string $format   WordPress date format. Empty uses site date + time.
 	 * @param string $fallback Value returned when the date is invalid.
 	 * @return string
 	 */
-	public static function format_display_datetime( $value, $format, $fallback = '—' ) {
+	public static function format_display_datetime( $value, $format = '', $fallback = '—' ) {
 		$timestamp = self::parse_api_datetime( $value );
+		if ( null === $timestamp ) {
+			return $fallback;
+		}
 
-		return null === $timestamp ? $fallback : wp_date( $format, $timestamp );
+		if ( '' === $format ) {
+			$format = self::site_datetime_format();
+		}
+
+		$formatted = wp_date( $format, $timestamp );
+		return is_string( $formatted ) && '' !== $formatted ? $formatted : $fallback;
+	}
+
+	/**
+	 * Human label for a LayerV event type.
+	 *
+	 * @param string $type Event type such as qurl.created.
+	 * @return string
+	 */
+	public static function format_event_type( $type ) {
+		$type   = sanitize_text_field( (string) $type );
+		$labels = array(
+			'qurl.created'          => __( 'Minted', 'wp-qurl' ),
+			'qurl.accessed'         => __( 'Accessed', 'wp-qurl' ),
+			'qurl.access_denied'    => __( 'Access denied', 'wp-qurl' ),
+			'qurl.updated'          => __( 'Updated', 'wp-qurl' ),
+			'qurl.expired'          => __( 'Expired', 'wp-qurl' ),
+			'qurl.revoked'          => __( 'Revoked', 'wp-qurl' ),
+			'qurl.token_exhausted'  => __( 'Used up', 'wp-qurl' ),
+			'resource.closed'       => __( 'Closed', 'wp-qurl' ),
+			'token.expired'         => __( 'Expired', 'wp-qurl' ),
+		);
+
+		return $labels[ $type ] ?? $type;
+	}
+
+	/**
+	 * Format a LayerV quota percentage for display.
+	 *
+	 * GET /v1/quota already returns a percent (4.5 means 4.5%), not a 0–1 fraction.
+	 *
+	 * @param mixed $value API percent field.
+	 * @return string
+	 */
+	public static function format_quota_percent( $value ) {
+		if ( ! is_numeric( $value ) ) {
+			return '';
+		}
+
+		return number_format_i18n( (float) $value, 1 ) . '%';
+	}
+
+	/**
+	 * Format used/max quota counts. -1 means unlimited.
+	 *
+	 * @param mixed $used Current usage.
+	 * @param mixed $max  Plan cap.
+	 * @return string
+	 */
+	public static function format_quota_count( $used, $max = null ) {
+		if ( ! is_numeric( $used ) ) {
+			return '—';
+		}
+
+		$used_label = number_format_i18n( (int) $used );
+		if ( ! is_numeric( $max ) ) {
+			return $used_label;
+		}
+
+		$max = (int) $max;
+		if ( $max < 0 ) {
+			/* translators: %s: current usage count */
+			return sprintf( __( '%s (unlimited)', 'wp-qurl' ), $used_label );
+		}
+
+		return $used_label . ' / ' . number_format_i18n( $max );
 	}
 
 	/**
@@ -517,7 +756,7 @@ class Service {
 		if ( $count >= $limit ) {
 			return new \WP_Error(
 				'wp_qurl_rate_limit',
-				__( 'Daily qURL generation limit reached for this endpoint.', 'wp-qurl' ),
+				__( 'Daily limit reached. Try again tomorrow.', 'wp-qurl' ),
 				array( 'status' => 429 )
 			);
 		}
@@ -570,7 +809,10 @@ class Service {
 			return 'guest_' . sanitize_key( (string) $args['meta']['guest_key'] );
 		}
 
-		return 'guest_' . md5( Protector::get_client_ip() );
+		$remote_addr = ! empty( $_SERVER['REMOTE_ADDR'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
+			: 'unknown';
+		return 'guest_' . md5( $remote_addr );
 	}
 
 	/**
@@ -682,206 +924,184 @@ class Service {
 	}
 
 	/**
-	 * Whether a LayerV revoke error means the remote token is already inactive.
+	 * Treat already-inactive LayerV responses as success.
+	 *
+	 * DELETE 503 means LayerV saved the revoke and is still clearing caches.
 	 *
 	 * @param \WP_Error $error API error.
 	 * @return bool
 	 */
-	public static function is_remote_revoke_benign( $error ) {
+	public static function is_already_gone( $error ) {
 		if ( ! is_wp_error( $error ) ) {
 			return false;
 		}
 
-		$data   = $error->get_error_data();
-		$status = is_array( $data ) ? (int) ( $data['status'] ?? 0 ) : 0;
+		$data       = $error->get_error_data();
+		$status     = is_array( $data ) ? (int) ( $data['status'] ?? 0 ) : 0;
+		$error_code = is_array( $data ) ? (string) ( $data['error_code'] ?? '' ) : '';
 
-		if ( in_array( $status, array( 404, 409, 410 ), true ) ) {
+		if ( in_array( $status, array( 404, 409, 410, 503 ), true ) ) {
 			return true;
 		}
 
-		$message = strtolower( $error->get_error_message() );
-		$needles = array(
-			'not active',
-			'already revoked',
-			'already inactive',
-			'no longer active',
-			'not found',
-			'has been revoked',
-			'was revoked',
-		);
+		if ( in_array( $error_code, array( 'not_found', 'resource_not_found', 'qurl_not_found', 'already_revoked', 'resource_closed', 'gone', 'service_unavailable' ), true ) ) {
+			return true;
+		}
 
-		foreach ( $needles as $needle ) {
-			if ( false !== strpos( $message, $needle ) ) {
+		return (bool) preg_match( '/not active|already revoked|already inactive|no longer active|not found|has been revoked|was revoked|does not support revocation/i', $error->get_error_message() );
+	}
+
+	/**
+	 * Candidate LayerV path IDs: CRID first, public key as fallback.
+	 *
+	 * @param string $crid        CRID.
+	 * @param string $resource_id Public key.
+	 * @return string[]
+	 */
+	private static function path_ids( $crid, $resource_id ) {
+		$ids = array();
+		foreach ( array( $crid, $resource_id ) as $id ) {
+			$id = sanitize_text_field( $id );
+			if ( $id && ! in_array( $id, $ids, true ) ) {
+				$ids[] = $id;
+			}
+		}
+		return $ids;
+	}
+
+	/**
+	 * Call LayerV with each stored ID until one succeeds or is already gone.
+	 *
+	 * @param callable $callback Receives one path ID.
+	 * @param array    $ids      Candidate IDs.
+	 * @return true|\WP_Error
+	 */
+	private static function with_path_ids( callable $callback, array $ids ) {
+		$last = new \WP_Error( 'wp_qurl_invalid_resource', __( 'Resource ID is required.', 'wp-qurl' ) );
+
+		foreach ( $ids as $id ) {
+			$result = $callback( $id );
+			if ( ! is_wp_error( $result ) || self::is_already_gone( $result ) ) {
 				return true;
 			}
+
+			$last   = $result;
+			$data   = $result->get_error_data();
+			$status = is_array( $data ) ? (int) ( $data['status'] ?? 0 ) : 0;
+			if ( ! in_array( $status, array( 400, 404 ), true ) ) {
+				return $result;
+			}
 		}
 
-		return false;
+		return $last;
 	}
 
 	/**
-	 * Revoke a token from the admin UI, keeping WordPress authoritative.
+	 * Revoke one local qURL after LayerV accepts the delete.
 	 *
-	 * Local records are always revoked when present. LayerV is updated when
-	 * possible, but benign "already inactive" responses are treated as synced.
-	 *
-	 * @param string $resource_id LayerV resource ID.
-	 * @param string $qurl_id     qURL display ID.
-	 * @param int    $local_id    Local token row ID.
-	 * @return array|\WP_Error
+	 * @param int $local_id Local token row ID.
+	 * @return true|\WP_Error
 	 */
-	public static function admin_revoke_token( $resource_id, $qurl_id = '', $local_id = 0 ) {
-		$local_id    = absint( $local_id );
-		$resource_id = sanitize_text_field( $resource_id );
-		$qurl_id     = sanitize_text_field( $qurl_id );
-		$local_token = $local_id ? Database::get_token( $local_id ) : null;
-
-		if ( $local_token ) {
-			if ( '' === $resource_id ) {
-				$resource_id = $local_token->resource_id;
-			}
-			if ( '' === $qurl_id ) {
-				$qurl_id = $local_token->qurl_id;
-			}
+	public static function revoke_token( $local_id ) {
+		$token = Database::get_token( absint( $local_id ) );
+		if ( ! $token ) {
+			return new \WP_Error( 'wp_qurl_not_found', __( 'No qURL found to revoke.', 'wp-qurl' ) );
 		}
 
-		if ( ! $local_token && ( '' === $resource_id || '' === $qurl_id ) ) {
-			return new \WP_Error(
-				'wp_qurl_not_found',
-				__( 'No qURL token found to revoke.', 'wp-qurl' )
-			);
-		}
-
-		$local_revoked = false;
-
-		if ( $local_id && $local_token ) {
-			if ( 'revoked' !== $local_token->status ) {
-				Database::update_token( $local_id, array( 'status' => 'revoked' ) );
-			}
-			$local_revoked = true;
-		}
-
-		if ( '' !== $resource_id ) {
-			$updated = Database::revoke_active_tokens( $resource_id, $qurl_id );
-			Database::revoke_page_grants( $resource_id, $qurl_id );
-			if ( $updated > 0 ) {
-				$local_revoked = true;
-			}
-		}
-
-		$remote_synced       = false;
-		$remote_error        = '';
-		$benign_remote_error = false;
-		$remote_attempted    = false;
-
-		if ( '' !== $resource_id && '' !== $qurl_id ) {
-			$remote_attempted = true;
-			$api              = new Api_Client();
-			$remote_result    = $api->revoke_qurl_token( $resource_id, $qurl_id );
-
-			if ( is_wp_error( $remote_result ) ) {
-				$remote_error        = $remote_result->get_error_message();
-				$benign_remote_error = self::is_remote_revoke_benign( $remote_result );
-				$remote_synced       = $benign_remote_error;
-			} else {
-				$remote_synced = true;
-			}
-		}
-
-		if ( ! $local_revoked && ! $remote_attempted ) {
-			return new \WP_Error(
-				'wp_qurl_not_found',
-				__( 'No qURL token found to revoke.', 'wp-qurl' )
-			);
-		}
-
-		return array(
-			'local_revoked'       => $local_revoked,
-			'remote_synced'       => $remote_synced,
-			'remote_error'        => $remote_error,
-			'benign_remote_error' => $benign_remote_error,
-			'remote_attempted'    => $remote_attempted,
+		$ids    = self::path_ids( $token->crid, $token->resource_id );
+		$api    = new Api_Client();
+		$result = self::with_path_ids(
+			static function ( $id ) use ( $api, $token ) {
+				return $api->revoke_qurl_token( $id, $token->qurl_id );
+			},
+			$ids
 		);
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		Database::revoke_tokens( $ids[0] ?? '', $token->qurl_id );
+		Grant::forget_qurl( $token->qurl_id );
+		return true;
 	}
 
 	/**
-	 * Revoke a resource from the admin UI, keeping WordPress authoritative.
+	 * Revoke a resource and every local link for it.
 	 *
-	 * @param string $resource_id LayerV resource ID.
-	 * @return array|\WP_Error
+	 * @param string $resource_id LayerV CRID or public key.
+	 * @return true|\WP_Error
 	 */
-	public static function admin_revoke_resource( $resource_id ) {
-		$resource_id = sanitize_text_field( $resource_id );
-		if ( '' === $resource_id ) {
-			return new \WP_Error(
-				'wp_qurl_invalid_resource',
-				__( 'Resource ID is required.', 'wp-qurl' )
-			);
+	public static function revoke_resource( $resource_id ) {
+		$resolved = Database::resource_id( $resource_id );
+		$ids      = self::path_ids( $resolved, $resource_id );
+		if ( ! $ids ) {
+			return new \WP_Error( 'wp_qurl_invalid_resource', __( 'Resource ID is required.', 'wp-qurl' ) );
 		}
 
-		$local_revoked = Database::revoke_active_tokens( $resource_id ) > 0;
-		Database::revoke_page_grants( $resource_id );
-
-		$remote_synced       = false;
-		$remote_error        = '';
-		$benign_remote_error = false;
-
-		$api           = new Api_Client();
-		$remote_result = $api->delete_qurl( $resource_id );
-
-		if ( is_wp_error( $remote_result ) ) {
-			$remote_error        = $remote_result->get_error_message();
-			$benign_remote_error = self::is_remote_revoke_benign( $remote_result );
-			$remote_synced       = $benign_remote_error;
-		} else {
-			$remote_synced = true;
-		}
-
-		return array(
-			'local_revoked'       => $local_revoked,
-			'remote_synced'       => $remote_synced,
-			'remote_error'        => $remote_error,
-			'benign_remote_error' => $benign_remote_error,
-			'remote_attempted'    => true,
+		$api    = new Api_Client();
+		$result = self::with_path_ids(
+			static function ( $id ) use ( $api ) {
+				return $api->delete_resource( $id );
+			},
+			$ids
 		);
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		foreach ( $ids as $id ) {
+			Database::revoke_tokens( $id );
+			Grant::forget_resource( $id );
+		}
+		return true;
 	}
 
 	/**
-	 * Sync local token state from a LayerV webhook event.
+	 * Extend one qURL's expiration.
 	 *
-	 * @param string $event_type Event type.
-	 * @param array  $event_data Event payload data.
+	 * @param int    $local_id  Local token row ID.
+	 * @param string $extend_by Duration such as 24h or 7d.
+	 * @return true|\WP_Error
 	 */
-	public static function sync_local_token_from_webhook( $event_type, array $event_data ) {
-		$resource_id = sanitize_text_field( $event_data['resource_id'] ?? '' );
-		$qurl_id     = sanitize_text_field( $event_data['qurl_id'] ?? '' );
-
-		if ( '' === $resource_id ) {
-			return;
+	public static function extend_token( $local_id, $extend_by ) {
+		$token     = Database::get_token( absint( $local_id ) );
+		$extend_by = sanitize_text_field( $extend_by );
+		if ( ! $token ) {
+			return new \WP_Error( 'wp_qurl_not_found', __( 'No qURL found to extend.', 'wp-qurl' ) );
+		}
+		if ( ! preg_match( '/^\d+[smhdw]$/', $extend_by ) ) {
+			return new \WP_Error( 'wp_qurl_invalid_duration', __( 'Extension duration is invalid.', 'wp-qurl' ) );
 		}
 
-		$revoke_events = array(
-			'qurl.revoked',
-			'qurl.expired',
-			'token.expired',
-			'qurl.token_exhausted',
-			'resource.closed',
-		);
-
-		/**
-		 * Filter webhook events that should mark local qURL tokens revoked.
-		 *
-		 * @param array  $revoke_events Event types.
-		 * @param string $event_type    Current event type.
-		 * @param array  $event_data    Event payload data.
-		 */
-		$revoke_events = apply_filters( 'wp_qurl_webhook_revoke_events', $revoke_events, $event_type, $event_data );
-
-		if ( ! in_array( $event_type, $revoke_events, true ) ) {
-			return;
+		$ids = self::path_ids( $token->crid, $token->resource_id );
+		$api = new Api_Client();
+		$result = null;
+		foreach ( $ids as $id ) {
+			$result = $api->update_qurl_token( $id, $token->qurl_id, array( 'extend_by' => $extend_by ) );
+			if ( ! is_wp_error( $result ) ) {
+				break;
+			}
+			$data   = $result->get_error_data();
+			$status = is_array( $data ) ? (int) ( $data['status'] ?? 0 ) : 0;
+			if ( ! in_array( $status, array( 400, 404 ), true ) ) {
+				return $result;
+			}
+		}
+		if ( is_wp_error( $result ) || ! is_array( $result ) ) {
+			return is_wp_error( $result ) ? $result : new \WP_Error( 'wp_qurl_not_found', __( 'No qURL found to extend.', 'wp-qurl' ) );
 		}
 
-		Database::revoke_active_tokens( $resource_id, $qurl_id );
-		Database::revoke_page_grants( $resource_id, $qurl_id );
+		$expires_at = self::format_storage_datetime( $result['expires_at'] ?? '' );
+		if ( $expires_at ) {
+			Database::update_token(
+				$token->id,
+				array(
+					'expires_at' => $expires_at,
+					'status'     => 'active',
+				)
+			);
+		}
+
+		return true;
 	}
 }

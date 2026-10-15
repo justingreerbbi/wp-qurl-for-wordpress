@@ -1,6 +1,6 @@
 <?php
 /**
- * Front-end access gate for qURL-protected pages.
+ * Front-end gate for qURL-protected pages.
  *
  * @package WP_QURL
  */
@@ -10,456 +10,407 @@ namespace WP_QURL;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Blocks unauthenticated qURL access to protected WordPress pages.
+ * Blocks the public permalink unless WordPress has a local access grant.
+ *
+ * LayerV authenticates the recipient. This host cannot change server
+ * firewall rules, so the plugin records that access and unlocks the page.
  */
 class Protector {
 
 	/**
-	 * Register front-end hooks.
+	 * Register the page gate and content-leak filters.
 	 */
 	public function init() {
-		add_action( 'template_redirect', array( $this, 'maybe_block_page' ), 1 );
+		add_action( 'wp', array( $this, 'maybe_block_page' ), 1 );
+		add_action( 'pre_get_posts', array( $this, 'exclude_from_public_queries' ), 9 );
+		add_filter( 'the_content', array( $this, 'filter_content' ), 1 );
+		add_filter( 'the_excerpt', array( $this, 'filter_excerpt' ), 1 );
+		add_filter( 'get_the_excerpt', array( $this, 'filter_excerpt' ), 1 );
+		add_filter( 'rest_pre_dispatch', array( $this, 'filter_rest_pre_dispatch' ), 10, 3 );
+		add_filter( 'rest_page_query', array( $this, 'filter_rest_page_query' ), 10, 2 );
+		add_filter( 'rest_prepare_page', array( $this, 'filter_rest_prepare_page' ), 10, 3 );
+		add_filter( 'rest_post_search_query', array( $this, 'filter_rest_search_query' ), 10, 2 );
+		add_filter( 'oembed_request_post_id', array( $this, 'filter_oembed_post_id' ), 10, 2 );
+		add_filter( 'oembed_response_data', array( $this, 'filter_oembed_response' ), 10, 2 );
+		add_filter( 'wp_sitemaps_posts_query_args', array( $this, 'filter_wp_sitemaps' ), 10, 2 );
+		add_filter( 'wpseo_exclude_from_sitemap_by_post_ids', array( $this, 'exclude_ids_from_sitemap' ) );
+		add_filter( 'rank_math/sitemap/exclude_post_ids', array( $this, 'exclude_ids_from_sitemap' ) );
 	}
 
 	/**
-	 * Block protected pages when the visitor lacks a valid page grant.
+	 * Deny direct-origin access to a protected page.
 	 */
 	public function maybe_block_page() {
 		if ( ! is_singular( 'page' ) ) {
 			return;
 		}
 
-		$post_id = get_queried_object_id();
-		if ( ! Page_Meta::is_protected( $post_id ) ) {
+		$page_id = get_queried_object_id();
+		if ( ! Page_Meta::is_protected( $page_id ) ) {
 			return;
 		}
 
 		$this->private_page_headers();
 
-		if ( $this->user_can_bypass( $post_id ) ) {
+		$allowed = $this->user_can_bypass( $page_id ) || Grant::allows( $page_id );
+		if ( $allowed ) {
 			return;
 		}
 
-		if ( $this->has_valid_page_grant( $post_id ) ) {
-			return;
-		}
-
-		$this->render_blocked( $post_id, 'denied' );
+		$this->render_blocked( $page_id );
 	}
 
 	/**
-	 * Set cache controls for every protected page response, allowed or denied.
+	 * Keep protected pages out of search, feeds, archives, and other lists.
+	 *
+	 * Singular permalink queries are left intact so they can 403 instead of 404.
+	 *
+	 * @param \WP_Query $query Query.
+	 */
+	public function exclude_from_public_queries( $query ) {
+		if ( ! $query instanceof \WP_Query ) {
+			return;
+		}
+
+		if ( $this->is_privileged_query_context() ) {
+			return;
+		}
+
+		if ( $query->is_singular() ) {
+			return;
+		}
+
+		$exclude = $this->hidden_page_ids();
+		if ( ! $exclude ) {
+			return;
+		}
+
+		$existing = $query->get( 'post__not_in' );
+		$existing = is_array( $existing ) ? $existing : array();
+		$query->set( 'post__not_in', array_values( array_unique( array_merge( $existing, $exclude ) ) ) );
+	}
+
+	/**
+	 * Strip protected body HTML outside an authorized view.
+	 *
+	 * @param string $content Post content.
+	 * @return string
+	 */
+	public function filter_content( $content ) {
+		$post_id = get_the_ID();
+		if ( ! $this->must_hide_post( $post_id ) ) {
+			return $content;
+		}
+
+		return '';
+	}
+
+	/**
+	 * Strip protected excerpts from loops and search cards.
+	 *
+	 * @param string $excerpt Excerpt.
+	 * @return string
+	 */
+	public function filter_excerpt( $excerpt ) {
+		$post_id = get_the_ID();
+		if ( ! $this->must_hide_post( $post_id ) ) {
+			return $excerpt;
+		}
+
+		return '';
+	}
+
+	/**
+	 * Block core REST fetches of a protected page.
+	 *
+	 * Disable REST API may already 401 guests. This still covers logged-in
+	 * users who are not the author, and sites without that plugin.
+	 *
+	 * @param mixed            $result Dispatch result.
+	 * @param \WP_REST_Server  $server REST server.
+	 * @param \WP_REST_Request $request Request.
+	 * @return mixed
+	 */
+	public function filter_rest_pre_dispatch( $result, $server, $request ) {
+		unset( $server );
+
+		if ( null !== $result ) {
+			return $result;
+		}
+
+		if ( ! $request instanceof \WP_REST_Request ) {
+			return $result;
+		}
+
+		$route = (string) $request->get_route();
+		if ( ! preg_match( '#^/wp/v2/pages/(?P<id>\d+)(?:/|$)#', $route, $matches ) ) {
+			return $result;
+		}
+
+		$page_id = absint( $matches['id'] );
+		if ( ! $this->must_hide_post( $page_id ) ) {
+			return $result;
+		}
+
+		return new \WP_Error(
+			'wp_qurl_protected',
+			__( 'This page is private. Use the qURL you were given to open it.', 'wp-qurl' ),
+			array( 'status' => 403 )
+		);
+	}
+
+	/**
+	 * Hide protected pages from REST page collections.
+	 *
+	 * @param array            $args    WP_Query args.
+	 * @param \WP_REST_Request $request Request.
+	 * @return array
+	 */
+	public function filter_rest_page_query( $args, $request ) {
+		unset( $request );
+		return $this->append_hidden_not_in( $args );
+	}
+
+	/**
+	 * Empty REST payload if a collection still includes a protected page.
+	 *
+	 * @param \WP_REST_Response $response Response.
+	 * @param \WP_Post          $post     Page.
+	 * @param \WP_REST_Request  $request  Request.
+	 * @return \WP_REST_Response
+	 */
+	public function filter_rest_prepare_page( $response, $post, $request ) {
+		unset( $request );
+
+		if ( ! $response instanceof \WP_REST_Response || ! $post instanceof \WP_Post ) {
+			return $response;
+		}
+
+		if ( ! $this->must_hide_post( $post->ID ) ) {
+			return $response;
+		}
+
+		$data = $response->get_data();
+		if ( ! is_array( $data ) ) {
+			return $response;
+		}
+
+		$data['content'] = array(
+			'raw'       => '',
+			'rendered'  => '',
+			'protected' => true,
+		);
+		$data['excerpt'] = array(
+			'raw'       => '',
+			'rendered'  => '',
+			'protected' => true,
+		);
+		if ( isset( $data['guid'] ) && is_array( $data['guid'] ) ) {
+			$data['guid']['rendered'] = '';
+		}
+		$response->set_data( $data );
+
+		return $response;
+	}
+
+	/**
+	 * Hide protected pages from the core REST search handler.
+	 *
+	 * @param array            $args    Query args.
+	 * @param \WP_REST_Request $request Request.
+	 * @return array
+	 */
+	public function filter_rest_search_query( $args, $request ) {
+		unset( $request );
+		return $this->append_hidden_not_in( $args );
+	}
+
+	/**
+	 * Refuse oEmbed discovery for a protected permalink.
+	 *
+	 * @param int    $post_id Post ID.
+	 * @param string $url     Requested URL.
+	 * @return int
+	 */
+	public function filter_oembed_post_id( $post_id, $url ) {
+		unset( $url );
+		$post_id = absint( $post_id );
+		if ( $post_id && $this->must_hide_post( $post_id ) ) {
+			return 0;
+		}
+
+		return $post_id;
+	}
+
+	/**
+	 * Strip oEmbed body if a protected page still resolved.
+	 *
+	 * @param array    $data oEmbed data.
+	 * @param \WP_Post $post Post.
+	 * @return array|false
+	 */
+	public function filter_oembed_response( $data, $post ) {
+		$post_id = $post instanceof \WP_Post ? (int) $post->ID : 0;
+		if ( $post_id && $this->must_hide_post( $post_id ) ) {
+			return false;
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Hide protected pages from the core sitemap.
+	 *
+	 * @param array  $args      Query args.
+	 * @param string $post_type Post type.
+	 * @return array
+	 */
+	public function filter_wp_sitemaps( $args, $post_type ) {
+		if ( 'page' !== $post_type ) {
+			return $args;
+		}
+
+		return $this->append_hidden_not_in( $args );
+	}
+
+	/**
+	 * Hide protected pages from Yoast / Rank Math sitemaps.
+	 *
+	 * @param int[] $ids Already excluded IDs.
+	 * @return int[]
+	 */
+	public function exclude_ids_from_sitemap( $ids ) {
+		$ids = is_array( $ids ) ? $ids : array();
+		return array_values( array_unique( array_merge( $ids, $this->hidden_page_ids() ) ) );
+	}
+
+	/**
+	 * Permit the logged-in page author, and qURL admins, to preview the origin page.
+	 *
+	 * @param int $page_id Page ID.
+	 * @return bool
+	 */
+	private function user_can_bypass( $page_id ) {
+		if ( ! is_user_logged_in() ) {
+			return false;
+		}
+
+		if ( Capabilities::current_user_can_manage() ) {
+			return true;
+		}
+
+		return (int) get_post_field( 'post_author', $page_id ) === get_current_user_id();
+	}
+
+	/**
+	 * Whether protected body may be shown on this request.
+	 *
+	 * LayerV Referer is not accepted here. That check is only for the
+	 * permalink HTML load in maybe_block_page().
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	private function must_hide_post( $post_id ) {
+		$post_id = absint( $post_id );
+		if ( ! $post_id || ! Page_Meta::is_protected( $post_id ) ) {
+			return false;
+		}
+
+		if ( $this->user_can_bypass( $post_id ) || Grant::has_cookie( $post_id ) ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Protected page IDs the current user may not see in lists.
+	 *
+	 * @return int[]
+	 */
+	private function hidden_page_ids() {
+		$hidden = array();
+		foreach ( Page_Meta::protected_page_ids() as $page_id ) {
+			if ( $this->must_hide_post( $page_id ) ) {
+				$hidden[] = $page_id;
+			}
+		}
+
+		return $hidden;
+	}
+
+	/**
+	 * Merge hidden page IDs into a query args array.
+	 *
+	 * @param array $args Query args.
+	 * @return array
+	 */
+	private function append_hidden_not_in( array $args ) {
+		$exclude = $this->hidden_page_ids();
+		if ( ! $exclude ) {
+			return $args;
+		}
+
+		$existing = isset( $args['post__not_in'] ) ? (array) $args['post__not_in'] : array();
+		$args['post__not_in'] = array_values( array_unique( array_merge( $existing, $exclude ) ) );
+		return $args;
+	}
+
+	/**
+	 * Admin screens (not REST) may list protected pages for editors.
+	 *
+	 * @return bool
+	 */
+	private function is_privileged_query_context() {
+		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+			return false;
+		}
+
+		return is_admin();
+	}
+
+	/**
+	 * Disable caching for every protected response.
 	 */
 	private function private_page_headers() {
 		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
 			define( 'DONOTCACHEPAGE', true );
 		}
+		if ( ! defined( 'LSCACHE_NO_CACHE' ) ) {
+			define( 'LSCACHE_NO_CACHE', true );
+		}
+
 		nocache_headers();
-		header( 'Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0', true );
-		header( 'Vary: Cookie', false );
+		if ( ! headers_sent() ) {
+			header( 'Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0', true );
+			header( 'Pragma: no-cache', true );
+			header( 'Expires: 0', true );
+			header( 'X-LiteSpeed-Cache-Control: no-cache', true );
+			header( 'Vary: Cookie, Referer', false );
+		}
+
+		do_action( 'litespeed_control_set_nocache', 'wp-qurl-protected' );
 	}
 
 	/**
-	 * Check cookie, local IP/UA grant, or live LayerV session match.
-	 *
-	 * @param int $post_id Page ID.
-	 * @return bool
-	 */
-	private function has_valid_page_grant( $post_id ) {
-		if ( $this->has_valid_page_cookie( $post_id ) ) {
-			return true;
-		}
-
-		$client_ip  = self::get_client_ip();
-		$user_agent = ! empty( $_SERVER['HTTP_USER_AGENT'] )
-			? sanitize_textarea_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) )
-			: '';
-
-		$grant = Database::find_matching_page_grant( $post_id, $client_ip, $user_agent );
-		if ( $grant && self::grant_page_access_cookie( $post_id, $grant ) ) {
-			return true;
-		}
-
-		$grant = $this->match_layer_v_session( $post_id, $client_ip, $user_agent );
-		if ( $grant && self::grant_page_access_cookie( $post_id, $grant ) ) {
-			return true;
-		}
-
-		return false;
-	}
-
-	/**
-	 * Validate an existing signed page cookie against the local grant row.
-	 *
-	 * @param int $post_id Page ID.
-	 * @return bool
-	 */
-	private function has_valid_page_cookie( $post_id ) {
-		$cookie_name = self::page_cookie_name( $post_id );
-		if ( empty( $_COOKIE[ $cookie_name ] ) ) {
-			return false;
-		}
-
-		$cookie_value = sanitize_text_field( wp_unslash( $_COOKIE[ $cookie_name ] ) );
-		$payload      = self::decode_signed_cookie( $cookie_value );
-		if (
-			! is_array( $payload )
-			|| absint( $payload['page_id'] ?? 0 ) !== absint( $post_id )
-			|| absint( $payload['expires_at'] ?? 0 ) <= time()
-		) {
-			$this->clear_page_cookie( $post_id );
-			return false;
-		}
-
-		$grant = Database::get_active_page_grant(
-			absint( $payload['grant_id'] ?? 0 ),
-			$post_id
-		);
-
-		if ( ! $grant ) {
-			$this->clear_page_cookie( $post_id );
-			return false;
-		}
-
-		return true;
-	}
-
-	/**
-	 * Fall back to live LayerV sessions when the webhook grant is delayed.
-	 *
-	 * @param int    $post_id    Page ID.
-	 * @param string $client_ip  Visitor IP.
-	 * @param string $user_agent Visitor user agent.
-	 * @return object|null
-	 */
-	private function match_layer_v_session( $post_id, $client_ip, $user_agent ) {
-		if ( ! Settings::is_configured() ) {
-			return null;
-		}
-
-		$permalink = get_permalink( $post_id );
-		if ( ! $permalink ) {
-			return null;
-		}
-
-		$resource_ids = Database::get_resource_ids_for_target( Service::normalize_target_url( $permalink ) );
-		if ( empty( $resource_ids ) ) {
-			return null;
-		}
-
-		$api = new Api_Client();
-		foreach ( $resource_ids as $resource_id ) {
-			$sessions = $api->list_sessions( $resource_id );
-			if ( is_wp_error( $sessions ) || ! is_array( $sessions ) ) {
-				continue;
-			}
-
-			foreach ( $sessions as $session ) {
-				if ( ! is_array( $session ) ) {
-					continue;
-				}
-				if ( ! Database::session_matches_visitor( $session, $client_ip, $user_agent ) ) {
-					continue;
-				}
-
-				$grant = Database::create_grant_from_session( $post_id, $resource_id, $session );
-				if ( $grant ) {
-					return $grant;
-				}
-			}
-		}
-
-		return null;
-	}
-
-	/**
-	 * Whether the current user may bypass qURL protection.
-	 *
-	 * @param int $post_id Page ID.
-	 * @return bool
-	 */
-	private function user_can_bypass( $post_id ) {
-		if ( Capabilities::current_user_can_manage() ) {
-			return true;
-		}
-
-		if ( current_user_can( 'edit_page', $post_id ) ) {
-			return true;
-		}
-
-		if ( is_preview() && current_user_can( 'edit_post', $post_id ) ) {
-			return true;
-		}
-
-		return false;
-	}
-
-	/**
-	 * Detect a reverse-proxy front end using standard forwarding headers.
-	 *
-	 * @return bool
-	 */
-	public static function detects_reverse_proxy() {
-		$remote_addr = ! empty( $_SERVER['REMOTE_ADDR'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
-			: '';
-		$real_ip     = ! empty( $_SERVER['HTTP_X_REAL_IP'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_REAL_IP'] ) )
-			: '';
-		$forwarded   = ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) )
-			: '';
-
-		$candidate = '';
-		if ( $real_ip && filter_var( $real_ip, FILTER_VALIDATE_IP ) ) {
-			$candidate = $real_ip;
-		} elseif ( $forwarded ) {
-			$parts = explode( ',', $forwarded );
-			$first = trim( $parts[0] );
-			if ( $first && filter_var( $first, FILTER_VALIDATE_IP ) ) {
-				$candidate = $first;
-			}
-		}
-
-		if ( '' === $candidate || '' === $remote_addr || $candidate === $remote_addr ) {
-			return false;
-		}
-
-		return ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] )
-			|| ! empty( $_SERVER['HTTP_X_FORWARDED_PROTO'] )
-			|| ! empty( $_SERVER['HTTP_X_FORWARDED_HOST'] )
-			|| ! empty( $_SERVER['HTTP_X_FORWARDED_SERVER'] );
-	}
-
-	/**
-	 * Get the visitor's IP address.
-	 *
-	 * @return string
-	 */
-	public static function get_client_ip() {
-		$ip            = '';
-		$trust_proxy   = (bool) apply_filters( 'wp_qurl_trust_proxy_headers', self::detects_reverse_proxy() );
-		$cf_ip         = ! empty( $_SERVER['HTTP_CF_CONNECTING_IP'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CF_CONNECTING_IP'] ) )
-			: '';
-		$forwarded_for = ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) )
-			: '';
-		$real_ip       = ! empty( $_SERVER['HTTP_X_REAL_IP'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_REAL_IP'] ) )
-			: '';
-		$remote_addr   = ! empty( $_SERVER['REMOTE_ADDR'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
-			: '';
-
-		if ( $trust_proxy && $cf_ip && filter_var( $cf_ip, FILTER_VALIDATE_IP ) ) {
-			$ip = $cf_ip;
-		} elseif ( $trust_proxy && $real_ip && filter_var( $real_ip, FILTER_VALIDATE_IP ) ) {
-			$ip = $real_ip;
-		} elseif ( $trust_proxy && $forwarded_for ) {
-			$parts = explode( ',', $forwarded_for );
-			$ip    = trim( $parts[0] );
-		} elseif ( $remote_addr ) {
-			$ip = $remote_addr;
-		}
-
-		if ( false === filter_var( $ip, FILTER_VALIDATE_IP ) ) {
-			$ip = '';
-		}
-
-		/**
-		 * Filter the client IP used for page unlock matching and rate limits.
-		 *
-		 * @param string $ip Detected client IP.
-		 */
-		return apply_filters( 'wp_qurl_client_ip', $ip );
-	}
-
-	/**
-	 * Set a page-specific cookie after a grant is matched.
-	 *
-	 * @param int    $page_id Page ID.
-	 * @param object $grant   Active grant row.
-	 * @return bool Whether the cookie header was issued.
-	 */
-	public static function grant_page_access_cookie( $page_id, $grant ) {
-		if ( headers_sent() || ! $grant ) {
-			return false;
-		}
-
-		$expires_at = Service::parse_api_datetime( $grant->expires_at ?? '' );
-		if ( ! $expires_at || $expires_at <= time() ) {
-			return false;
-		}
-
-		$value = self::encode_signed_cookie(
-			array(
-				'grant_id'   => absint( $grant->id ?? 0 ),
-				'page_id'    => absint( $page_id ),
-				'expires_at' => $expires_at,
-			)
-		);
-
-		$cookie_name = self::page_cookie_name( $page_id );
-		$issued      = setcookie(
-			$cookie_name,
-			$value,
-			array(
-				'expires'  => $expires_at,
-				'path'     => COOKIEPATH ? COOKIEPATH : '/',
-				'domain'   => COOKIE_DOMAIN,
-				'secure'   => true,
-				'httponly' => true,
-				'samesite' => 'Lax',
-			)
-		);
-
-		if ( ! $issued ) {
-			return false;
-		}
-
-		$_COOKIE[ $cookie_name ] = $value;
-		return true;
-	}
-
-	/**
-	 * Build the isolated cookie name for a protected page.
+	 * Render the access-denied template.
 	 *
 	 * @param int $page_id Page ID.
-	 * @return string
 	 */
-	private static function page_cookie_name( $page_id ) {
-		return 'wp_qurl_page_' . absint( $page_id );
-	}
-
-	/**
-	 * Sign a local cookie payload.
-	 *
-	 * @param array $payload Cookie data.
-	 * @return string
-	 */
-	private static function encode_signed_cookie( array $payload ) {
-		$json      = wp_json_encode( $payload );
-		$encoded   = rtrim( strtr( base64_encode( $json ), '+/', '-_' ), '=' ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- URL-safe encoding, not obfuscation.
-		$signature = hash_hmac( 'sha256', $encoded, wp_salt( 'wp_qurl_page_grant' ) );
-		return $encoded . '.' . $signature;
-	}
-
-	/**
-	 * Verify and decode a local signed cookie.
-	 *
-	 * @param string $value Cookie value.
-	 * @return array|null
-	 */
-	private static function decode_signed_cookie( $value ) {
-		$parts = explode( '.', sanitize_text_field( (string) $value ), 2 );
-		if ( 2 !== count( $parts ) ) {
-			return null;
-		}
-
-		$expected = hash_hmac( 'sha256', $parts[0], wp_salt( 'wp_qurl_page_grant' ) );
-		if ( ! hash_equals( $expected, $parts[1] ) ) {
-			return null;
-		}
-
-		$padding = strlen( $parts[0] ) % 4;
-		$encoded = strtr( $parts[0], '-_', '+/' );
-		if ( $padding ) {
-			$encoded .= str_repeat( '=', 4 - $padding );
-		}
-
-		$decoded = base64_decode( $encoded, true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Decodes the signed URL-safe cookie payload.
-		if ( false === $decoded ) {
-			return null;
-		}
-
-		$payload = json_decode( $decoded, true );
-		return is_array( $payload ) ? $payload : null;
-	}
-
-	/**
-	 * Clear only the local grant cookie for one page.
-	 *
-	 * @param int $post_id Page ID.
-	 */
-	private function clear_page_cookie( $post_id ) {
-		$cookie_name = self::page_cookie_name( $post_id );
-		if ( empty( $_COOKIE[ $cookie_name ] ) ) {
-			return;
-		}
-
-		if ( ! headers_sent() ) {
-			setcookie(
-				$cookie_name,
-				'',
-				array(
-					'expires'  => time() - YEAR_IN_SECONDS,
-					'path'     => COOKIEPATH ? COOKIEPATH : '/',
-					'domain'   => COOKIE_DOMAIN,
-					'secure'   => true,
-					'httponly' => true,
-					'samesite' => 'Lax',
-				)
-			);
-		}
-
-		unset( $_COOKIE[ $cookie_name ] );
-	}
-
-	/**
-	 * Clear leftover cookies from earlier plugin builds on deny.
-	 */
-	private function clear_stale_cookies() {
-		foreach ( array( 'wp_qurl_access', 'wp_qurl_access_grant' ) as $cookie_name ) {
-			if ( empty( $_COOKIE[ $cookie_name ] ) ) {
-				continue;
-			}
-
-			if ( ! headers_sent() ) {
-				setcookie(
-					$cookie_name,
-					'',
-					array(
-						'expires'  => time() - YEAR_IN_SECONDS,
-						'path'     => COOKIEPATH ? COOKIEPATH : '/',
-						'domain'   => COOKIE_DOMAIN,
-						'secure'   => is_ssl(),
-						'httponly' => true,
-						'samesite' => 'Lax',
-					)
-				);
-			}
-
-			unset( $_COOKIE[ $cookie_name ] );
-		}
-	}
-
-	/**
-	 * Render the blocked access page and exit.
-	 *
-	 * @param int    $post_id Page ID.
-	 * @param string $reason  Block reason code.
-	 */
-	private function render_blocked( $post_id, $reason ) {
-		$this->clear_page_cookie( $post_id );
-		$this->clear_stale_cookies();
-
+	private function render_blocked( $page_id ) {
 		status_header( 403 );
 		nocache_headers();
 
 		$template = WP_QURL_PATH . 'public/views/blocked.php';
 		if ( is_readable( $template ) ) {
-			$block_reason  = $reason;
-			$page_title    = get_the_title( $post_id );
-			$debug_context = Debug::is_enabled() && Capabilities::current_user_can_manage()
-				? Debug::collect_block_context( $post_id, $reason )
-				: null;
+			$page_title = get_the_title( $page_id );
 			include $template;
 			exit;
 		}
 
 		wp_die(
-			esc_html__( 'This page is protected. Please use your qURL access link to view it.', 'wp-qurl' ),
+			esc_html__( 'This page is private. Use the qURL you were given to open it.', 'wp-qurl' ),
 			esc_html__( 'Access Denied', 'wp-qurl' ),
 			array( 'response' => 403 )
 		);

@@ -16,8 +16,8 @@ defined( 'ABSPATH' ) || exit;
 	<h1><?php esc_html_e( 'qURL Settings', 'wp-qurl' ); ?></h1>
 
 	<?php if ( $configured ) : ?>
-		<h2><?php esc_html_e( 'Account Quota', 'wp-qurl' ); ?></h2>
-		<p class="description"><?php esc_html_e( 'Current LayerV usage and limits for your API key.', 'wp-qurl' ); ?></p>
+		<h2><?php esc_html_e( 'Your Plan', 'wp-qurl' ); ?></h2>
+		<p class="description"><?php esc_html_e( 'Your plan usage.', 'wp-qurl' ); ?></p>
 
 		<?php if ( $quota_error ) : ?>
 			<div class="notice notice-error inline"><p><?php echo esc_html( $quota_error ); ?></p></div>
@@ -43,59 +43,61 @@ defined( 'ABSPATH' ) || exit;
 					</p>
 				<?php endif; ?>
 
-				<?php if ( ! empty( $quota['usage'] ) && is_array( $quota['usage'] ) ) : ?>
+				<?php
+				$usage       = ( isset( $quota['usage'] ) && is_array( $quota['usage'] ) ) ? $quota['usage'] : array();
+				$limits      = ( isset( $quota['rate_limits'] ) && is_array( $quota['rate_limits'] ) ) ? $quota['rate_limits'] : array();
+				$active_used = $usage['active_resources'] ?? ( $usage['active_qurls'] ?? null );
+				$active_max  = $limits['max_active_resources'] ?? ( $limits['max_active_qurls'] ?? null );
+				$active_pct  = $usage['active_resources_percent'] ?? ( $usage['active_qurls_percent'] ?? null );
+				?>
+				<?php if ( $usage ) : ?>
 					<table class="widefat striped" style="margin-top:1em;">
 						<tbody>
-							<?php if ( isset( $quota['usage']['qurls_created'] ) ) : ?>
+							<?php if ( isset( $usage['qurls_created'] ) ) : ?>
 								<tr>
-									<th scope="row"><?php esc_html_e( 'qURLs created', 'wp-qurl' ); ?></th>
-									<td><?php echo esc_html( (string) $quota['usage']['qurls_created'] ); ?></td>
+									<th scope="row"><?php esc_html_e( 'qURLs minted', 'wp-qurl' ); ?></th>
+									<td><?php echo esc_html( \WP_QURL\Service::format_quota_count( $usage['qurls_created'], $limits['max_qurls'] ?? null ) ); ?></td>
 								</tr>
 							<?php endif; ?>
-							<?php if ( isset( $quota['usage']['active_qurls'] ) ) : ?>
+							<?php if ( null !== $active_used ) : ?>
 								<tr>
-									<th scope="row"><?php esc_html_e( 'Active qURLs', 'wp-qurl' ); ?></th>
-									<td><?php echo esc_html( (string) $quota['usage']['active_qurls'] ); ?></td>
+									<th scope="row"><?php esc_html_e( 'Protected pages in use', 'wp-qurl' ); ?></th>
+									<td><?php echo esc_html( \WP_QURL\Service::format_quota_count( $active_used, $active_max ) ); ?></td>
 								</tr>
 							<?php endif; ?>
-							<?php if ( isset( $quota['usage']['active_qurls_percent'] ) ) : ?>
+							<?php if ( is_numeric( $active_pct ) ) : ?>
 								<tr>
-									<th scope="row"><?php esc_html_e( 'Active qURL usage', 'wp-qurl' ); ?></th>
-									<td><?php echo esc_html( number_format_i18n( (float) $quota['usage']['active_qurls_percent'] * 100, 1 ) ); ?>%</td>
+									<th scope="row"><?php esc_html_e( 'Plan usage', 'wp-qurl' ); ?></th>
+									<td><?php echo esc_html( \WP_QURL\Service::format_quota_percent( $active_pct ) ); ?></td>
 								</tr>
 							<?php endif; ?>
-							<?php if ( isset( $quota['usage']['total_accesses'] ) ) : ?>
+							<?php if ( isset( $usage['total_accesses'] ) ) : ?>
 								<tr>
-									<th scope="row"><?php esc_html_e( 'Total accesses', 'wp-qurl' ); ?></th>
-									<td><?php echo esc_html( (string) $quota['usage']['total_accesses'] ); ?></td>
+									<th scope="row"><?php esc_html_e( 'Total opens', 'wp-qurl' ); ?></th>
+									<td><?php echo esc_html( \WP_QURL\Service::format_quota_count( $usage['total_accesses'] ) ); ?></td>
 								</tr>
 							<?php endif; ?>
 						</tbody>
 					</table>
 				<?php endif; ?>
 
-				<?php if ( ! empty( $quota['rate_limits'] ) && is_array( $quota['rate_limits'] ) ) : ?>
-					<details style="margin-top:1em;">
-						<summary><?php esc_html_e( 'Rate limits', 'wp-qurl' ); ?></summary>
-						<pre class="wp-qurl-quota-raw"><?php echo esc_html( wp_json_encode( $quota['rate_limits'], JSON_PRETTY_PRINT ) ); ?></pre>
-					</details>
-				<?php endif; ?>
 			</div>
 		<?php else : ?>
-			<p class="description"><?php esc_html_e( 'Quota information is unavailable.', 'wp-qurl' ); ?></p>
+			<p class="description"><?php esc_html_e( 'Usage details are not available right now.', 'wp-qurl' ); ?></p>
 		<?php endif; ?>
 	<?php endif; ?>
 
-	<form method="post" action="">
+		<form method="post" action="" autocomplete="off">
 		<?php wp_nonce_field( 'wp_qurl_save_settings' ); ?>
 		<input type="hidden" name="wp_qurl_action" value="save_settings" />
+		<input type="text" name="wp_qurl_username" value="" autocomplete="username" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px;height:0;width:0;opacity:0;" />
 
-		<h2><?php esc_html_e( 'API Connection', 'wp-qurl' ); ?></h2>
+		<h2><?php esc_html_e( 'LayerV Key', 'wp-qurl' ); ?></h2>
 		<p class="description">
 			<?php
 			printf(
 				/* translators: %s: LayerV API documentation URL */
-				esc_html__( 'Get your API key from the LayerV dashboard. API documentation: %s', 'wp-qurl' ),
+				esc_html__( 'Get a key from your LayerV account. Help: %s', 'wp-qurl' ),
 				'<a href="https://layerv.ai/docs/" target="_blank" rel="noopener">layerv.ai/docs</a>'
 			);
 			?>
@@ -104,38 +106,40 @@ defined( 'ABSPATH' ) || exit;
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row">
-					<label for="api_base_url"><?php esc_html_e( 'API Base URL', 'wp-qurl' ); ?></label>
+					<label for="api_base_url"><?php esc_html_e( 'LayerV address', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="url" name="api_base_url" id="api_base_url" class="regular-text"
 						value="<?php echo esc_attr( $settings['api_base_url'] ); ?>" />
-					<p class="description"><?php esc_html_e( 'Default: https://api.layerv.ai', 'wp-qurl' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Leave this unless LayerV told you to change it.', 'wp-qurl' ); ?></p>
 				</td>
 			</tr>
 			<tr>
 				<th scope="row">
-					<label for="api_key"><?php esc_html_e( 'API Key', 'wp-qurl' ); ?></label>
+					<label for="wp_qurl_api_key"><?php esc_html_e( 'API Key', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
-					<input type="password" name="api_key" id="api_key" class="regular-text" autocomplete="new-password"
-						placeholder="<?php echo $configured ? esc_attr__( '•••••••• (leave blank to keep current)', 'wp-qurl' ) : esc_attr__( 'Enter your LayerV API key', 'wp-qurl' ); ?>" />
+					<input type="password" name="wp_qurl_api_key" id="wp_qurl_api_key" class="regular-text"
+						autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-form-type="other"
+						readonly onfocus="this.removeAttribute('readonly');"
+						placeholder="<?php echo $configured ? esc_attr__( 'Leave blank to keep the current key', 'wp-qurl' ) : esc_attr__( 'Paste your LayerV API key', 'wp-qurl' ); ?>" />
 					<p class="description">
-						<?php esc_html_e( 'Requires qurl:read and qurl:write scopes. Stored encrypted in the database.', 'wp-qurl' ); ?>
+						<?php esc_html_e( 'Paste your key here. Leave blank to keep the one already saved.', 'wp-qurl' ); ?>
 					</p>
 					<?php if ( $configured ) : ?>
-						<p class="description" style="color:green;">&#10003; <?php esc_html_e( 'API key is configured.', 'wp-qurl' ); ?></p>
+						<p class="description" style="color:green;">&#10003; <?php esc_html_e( 'A key is saved.', 'wp-qurl' ); ?></p>
 					<?php endif; ?>
 				</td>
 			</tr>
 		</table>
 
-		<h2><?php esc_html_e( 'Default qURL Options', 'wp-qurl' ); ?></h2>
-		<p class="description"><?php esc_html_e( 'Defaults applied when creating new qURLs. Authors can override per qURL.', 'wp-qurl' ); ?></p>
+		<h2><?php esc_html_e( 'New qURL defaults', 'wp-qurl' ); ?></h2>
+		<p class="description"><?php esc_html_e( 'Starting values when you make a new qURL. You can still change them each time.', 'wp-qurl' ); ?></p>
 
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row">
-					<label for="default_expires_in"><?php esc_html_e( 'Default Link Expiration', 'wp-qurl' ); ?></label>
+					<label for="default_expires_in"><?php esc_html_e( 'Link expiration', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="text" name="default_expires_in" id="default_expires_in" class="regular-text"
@@ -144,7 +148,7 @@ defined( 'ABSPATH' ) || exit;
 			</tr>
 			<tr>
 				<th scope="row">
-					<label for="default_session_duration"><?php esc_html_e( 'Default Session Duration', 'wp-qurl' ); ?></label>
+					<label for="default_session_duration"><?php esc_html_e( 'Viewing time', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="text" name="default_session_duration" id="default_session_duration" class="regular-text"
@@ -157,29 +161,29 @@ defined( 'ABSPATH' ) || exit;
 					<label>
 						<input type="checkbox" name="default_one_time_use" value="1"
 							<?php checked( $settings['default_one_time_use'] ); ?> />
-						<?php esc_html_e( 'Expire after single use by default', 'wp-qurl' ); ?>
+						<?php esc_html_e( 'New links work only once, unless you change it', 'wp-qurl' ); ?>
 					</label>
 				</td>
 			</tr>
 			<tr>
 				<th scope="row">
-					<label for="default_max_sessions"><?php esc_html_e( 'Default Max Sessions', 'wp-qurl' ); ?></label>
+					<label for="default_max_sessions"><?php esc_html_e( 'People at once', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="number" name="default_max_sessions" id="default_max_sessions" min="0" max="1000"
 						value="<?php echo esc_attr( $settings['default_max_sessions'] ); ?>" />
-					<p class="description"><?php esc_html_e( '0 = unlimited', 'wp-qurl' ); ?></p>
+					<p class="description"><?php esc_html_e( '0 means no limit.', 'wp-qurl' ); ?></p>
 				</td>
 			</tr>
 		</table>
 
-		<h2><?php esc_html_e( 'Frontend Block (Self-Service)', 'wp-qurl' ); ?></h2>
-		<p class="description"><?php esc_html_e( 'Defaults for the qURL Access Link block. Logged-in users mint one-time links via the public REST API — not the admin UI.', 'wp-qurl' ); ?></p>
+		<h2><?php esc_html_e( 'Page Block', 'wp-qurl' ); ?></h2>
+		<p class="description"><?php esc_html_e( 'Settings for the Mint qURL block you can add to a page.', 'wp-qurl' ); ?></p>
 
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row">
-					<label for="frontend_block_expires_in"><?php esc_html_e( 'Block Link Expiration', 'wp-qurl' ); ?></label>
+					<label for="frontend_block_expires_in"><?php esc_html_e( 'Link expiration', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="text" name="frontend_block_expires_in" id="frontend_block_expires_in" class="regular-text"
@@ -188,7 +192,7 @@ defined( 'ABSPATH' ) || exit;
 			</tr>
 			<tr>
 				<th scope="row">
-					<label for="frontend_block_session_duration"><?php esc_html_e( 'Block Session Duration', 'wp-qurl' ); ?></label>
+					<label for="frontend_block_session_duration"><?php esc_html_e( 'Viewing time', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="text" name="frontend_block_session_duration" id="frontend_block_session_duration" class="regular-text"
@@ -197,25 +201,25 @@ defined( 'ABSPATH' ) || exit;
 			</tr>
 			<tr>
 				<th scope="row">
-					<label for="frontend_mint_daily_limit"><?php esc_html_e( 'Daily Mint Limit', 'wp-qurl' ); ?></label>
+					<label for="frontend_mint_daily_limit"><?php esc_html_e( 'Daily limit', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<input type="number" name="frontend_mint_daily_limit" id="frontend_mint_daily_limit" min="0" max="1000"
 						value="<?php echo esc_attr( $settings['frontend_mint_daily_limit'] ); ?>" />
-					<p class="description"><?php esc_html_e( 'Per user, per endpoint, per day. 0 = unlimited.', 'wp-qurl' ); ?></p>
+					<p class="description"><?php esc_html_e( 'How many links someone can make each day. 0 means no limit.', 'wp-qurl' ); ?></p>
 				</td>
 			</tr>
 			<tr>
 				<th scope="row">
-					<label for="frontend_allowed_hosts"><?php esc_html_e( 'Additional Allowed Hosts', 'wp-qurl' ); ?></label>
+					<label for="frontend_allowed_hosts"><?php esc_html_e( 'Other sites', 'wp-qurl' ); ?></label>
 				</th>
 				<td>
 					<textarea name="frontend_allowed_hosts" id="frontend_allowed_hosts" class="large-text" rows="3"><?php echo esc_textarea( $settings['frontend_allowed_hosts'] ); ?></textarea>
-					<p class="description"><?php esc_html_e( 'One hostname per line. The site host is always allowed. HTTPS required.', 'wp-qurl' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Extra sites the block can make links for. One per line.', 'wp-qurl' ); ?></p>
 				</td>
 			</tr>
 			<tr>
-				<th scope="row"><?php esc_html_e( 'Roles Allowed to Mint', 'wp-qurl' ); ?></th>
+				<th scope="row"><?php esc_html_e( 'Who can make links', 'wp-qurl' ); ?></th>
 				<td>
 					<?php
 					$mint_roles = \WP_QURL\Settings::get_frontend_mint_roles();
@@ -227,18 +231,18 @@ defined( 'ABSPATH' ) || exit;
 							<?php echo esc_html( translate_user_role( $role_data['name'] ) ); ?>
 						</label>
 					<?php endforeach; ?>
-					<p class="description"><?php esc_html_e( 'Administrators, editors, and authors always receive mint access.', 'wp-qurl' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Admins, editors, and authors can always make links.', 'wp-qurl' ); ?></p>
 				</td>
 			</tr>
 		</table>
 
-		<h2><?php esc_html_e( 'Access Logging', 'wp-qurl' ); ?></h2>
+		<h2><?php esc_html_e( 'Visit history', 'wp-qurl' ); ?></h2>
 		<p class="description">
 			<?php
 			echo wp_kses_post(
 				sprintf(
 					/* translators: %s: Link to the Webhooks administration page. */
-					__( 'Manage LayerV webhooks on the %s page. Delivery metadata is retained for deduplication; detailed payload storage is optional.', 'wp-qurl' ),
+					__( 'Turn logging on from the %s page. You usually do not need extra details.', 'wp-qurl' ),
 					'<a href="' . esc_url( admin_url( 'admin.php?page=wp-qurl-webhooks' ) ) . '">' . esc_html__( 'Webhooks', 'wp-qurl' ) . '</a>'
 				)
 			);
@@ -247,41 +251,22 @@ defined( 'ABSPATH' ) || exit;
 
 		<table class="form-table" role="presentation">
 			<tr>
-				<th scope="row"><?php esc_html_e( 'Detailed Logging', 'wp-qurl' ); ?></th>
+				<th scope="row"><?php esc_html_e( 'Extra details', 'wp-qurl' ); ?></th>
 				<td>
 					<label>
 						<input type="checkbox" name="enable_webhook_logging" value="1"
 							<?php checked( $settings['enable_webhook_logging'] ); ?> />
-						<?php esc_html_e( 'Store full incoming webhook payloads in the access log', 'wp-qurl' ); ?>
+						<?php esc_html_e( 'Keep extra event details in the log', 'wp-qurl' ); ?>
 					</label>
 				</td>
 			</tr>
 			<tr>
-				<th scope="row"><?php esc_html_e( 'Webhook Token', 'wp-qurl' ); ?></th>
+				<th scope="row"><?php esc_html_e( 'Logging password', 'wp-qurl' ); ?></th>
 				<td>
 					<label>
 						<input type="checkbox" name="regenerate_webhook_token" value="1" />
-						<?php esc_html_e( 'Regenerate receiver URL token on save (sync webhook in LayerV afterward)', 'wp-qurl' ); ?>
+						<?php esc_html_e( 'Make a new webhook password (sync Webhooks after you save)', 'wp-qurl' ); ?>
 					</label>
-				</td>
-			</tr>
-		</table>
-
-		<h2><?php esc_html_e( 'Troubleshooting', 'wp-qurl' ); ?></h2>
-		<p class="description"><?php esc_html_e( 'Use debug mode while diagnosing protected-page access issues. Disable it when finished — the blocked page will expose technical request details to anyone who is denied access.', 'wp-qurl' ); ?></p>
-
-		<table class="form-table" role="presentation">
-			<tr>
-				<th scope="row"><?php esc_html_e( 'Debug Mode', 'wp-qurl' ); ?></th>
-				<td>
-					<label>
-						<input type="checkbox" name="enable_debug_mode" value="1"
-							<?php checked( ! empty( $settings['enable_debug_mode'] ) ); ?> />
-						<?php esc_html_e( 'Show diagnostic information on the Access Denied page', 'wp-qurl' ); ?>
-					</label>
-					<p class="description">
-						<?php esc_html_e( 'When enabled, blocked requests display diagnostics only to signed-in qURL administrators. Anonymous visitors never receive debug data.', 'wp-qurl' ); ?>
-					</p>
 				</td>
 			</tr>
 		</table>
@@ -292,7 +277,7 @@ defined( 'ABSPATH' ) || exit;
 	<form method="post" class="wp-qurl-test-form">
 		<?php wp_nonce_field( 'wp_qurl_test_connection' ); ?>
 		<input type="hidden" name="wp_qurl_action" value="test_connection" />
-		<?php submit_button( __( 'Test API Connection', 'wp-qurl' ), 'secondary', 'submit', false ); ?>
-		<p class="description"><?php esc_html_e( 'Tests the saved API key against GET /v1/quota.', 'wp-qurl' ); ?></p>
+		<?php submit_button( __( 'Test key', 'wp-qurl' ), 'secondary', 'submit', false ); ?>
+		<p class="description"><?php esc_html_e( 'Checks that your API key works.', 'wp-qurl' ); ?></p>
 	</form>
 </div>

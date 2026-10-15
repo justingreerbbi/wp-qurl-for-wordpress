@@ -18,13 +18,11 @@ class Webhook_Manager {
 	 * Default events subscribed for WordPress access logging.
 	 */
 	const DEFAULT_EVENTS = array(
+		'qurl.created',
 		'qurl.accessed',
 		'qurl.access_denied',
-		'qurl.created',
-		'qurl.expired',
 		'qurl.revoked',
-		'token.minted',
-		'token.expired',
+		'qurl.expired',
 		'qurl.token_exhausted',
 		'resource.closed',
 	);
@@ -53,7 +51,7 @@ class Webhook_Manager {
 		if ( ! Settings::is_configured() ) {
 			return array(
 				'success' => false,
-				'message' => __( 'API key is not configured.', 'wp-qurl' ),
+				'message' => __( 'Add your API key in Settings first.', 'wp-qurl' ),
 			);
 		}
 
@@ -63,14 +61,14 @@ class Webhook_Manager {
 		if ( empty( $events ) ) {
 			return array(
 				'success' => false,
-				'message' => __( 'Select at least one webhook event.', 'wp-qurl' ),
+				'message' => __( 'Pick at least one event to record.', 'wp-qurl' ),
 			);
 		}
 
 		if ( ! $this->is_https_url( $url ) ) {
 			return array(
 				'success' => false,
-				'message' => __( 'Webhook URL must use HTTPS. Configure SSL on your site first.', 'wp-qurl' ),
+				'message' => __( 'Your site needs HTTPS for logging to work.', 'wp-qurl' ),
 			);
 		}
 
@@ -101,7 +99,7 @@ class Webhook_Manager {
 		if ( empty( $result['webhook_id'] ) || empty( $result['secret'] ) ) {
 			return array(
 				'success' => false,
-				'message' => __( 'LayerV did not return a webhook ID or secret.', 'wp-qurl' ),
+				'message' => __( 'LayerV did not finish turning logging on. Try again.', 'wp-qurl' ),
 			);
 		}
 
@@ -109,7 +107,7 @@ class Webhook_Manager {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Webhook registered with LayerV successfully.', 'wp-qurl' ),
+			'message' => __( 'Logging is on.', 'wp-qurl' ),
 		);
 	}
 
@@ -124,7 +122,7 @@ class Webhook_Manager {
 		if ( '' === $webhook_id ) {
 			return array(
 				'success' => false,
-				'message' => __( 'No webhook is registered yet.', 'wp-qurl' ),
+				'message' => __( 'Turn logging on first.', 'wp-qurl' ),
 			);
 		}
 
@@ -132,7 +130,7 @@ class Webhook_Manager {
 		if ( empty( $events ) ) {
 			return array(
 				'success' => false,
-				'message' => __( 'Select at least one webhook event.', 'wp-qurl' ),
+				'message' => __( 'Pick at least one event to record.', 'wp-qurl' ),
 			);
 		}
 
@@ -155,7 +153,7 @@ class Webhook_Manager {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Webhook events updated.', 'wp-qurl' ),
+			'message' => __( 'Saved.', 'wp-qurl' ),
 		);
 	}
 
@@ -171,14 +169,14 @@ class Webhook_Manager {
 		if ( '' === $webhook_id ) {
 			return array(
 				'success' => false,
-				'message' => __( 'No webhook is registered yet.', 'wp-qurl' ),
+				'message' => __( 'Turn logging on first.', 'wp-qurl' ),
 			);
 		}
 
 		if ( ! $this->is_https_url( $url ) ) {
 			return array(
 				'success' => false,
-				'message' => __( 'Webhook URL must use HTTPS.', 'wp-qurl' ),
+				'message' => __( 'Your site needs HTTPS.', 'wp-qurl' ),
 			);
 		}
 
@@ -199,7 +197,7 @@ class Webhook_Manager {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Webhook URL synced with LayerV.', 'wp-qurl' ),
+			'message' => __( 'Synced.', 'wp-qurl' ),
 		);
 	}
 
@@ -213,7 +211,7 @@ class Webhook_Manager {
 		if ( '' === $webhook_id ) {
 			return array(
 				'success' => false,
-				'message' => __( 'No webhook is registered yet.', 'wp-qurl' ),
+				'message' => __( 'Turn logging on first.', 'wp-qurl' ),
 			);
 		}
 
@@ -228,7 +226,7 @@ class Webhook_Manager {
 		if ( empty( $result['secret'] ) ) {
 			return array(
 				'success' => false,
-				'message' => __( 'LayerV did not return a new webhook secret.', 'wp-qurl' ),
+				'message' => __( 'LayerV did not give us a new secret. Try again.', 'wp-qurl' ),
 			);
 		}
 
@@ -236,7 +234,7 @@ class Webhook_Manager {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Webhook secret regenerated and saved.', 'wp-qurl' ),
+			'message' => __( 'New secret saved.', 'wp-qurl' ),
 		);
 	}
 
@@ -250,7 +248,7 @@ class Webhook_Manager {
 
 		if ( '' !== $webhook_id ) {
 			$result = $this->api->delete_webhook( $webhook_id );
-			if ( is_wp_error( $result ) ) {
+			if ( is_wp_error( $result ) && ! Service::is_already_gone( $result ) ) {
 				return array(
 					'success' => false,
 					'message' => $result->get_error_message(),
@@ -262,7 +260,7 @@ class Webhook_Manager {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Webhook unregistered.', 'wp-qurl' ),
+			'message' => __( 'Logging is off.', 'wp-qurl' ),
 		);
 	}
 
@@ -297,7 +295,7 @@ class Webhook_Manager {
 
 		$deliveries = $this->api->list_webhook_deliveries( $status['webhook_id'], array( 'limit' => 10 ) );
 		if ( ! is_wp_error( $deliveries ) && is_array( $deliveries ) ) {
-			$status['deliveries'] = $deliveries;
+			$status['deliveries'] = $this->flatten_collection( $deliveries );
 		}
 
 		return $status;
@@ -358,7 +356,7 @@ class Webhook_Manager {
 		if ( '' === $webhook_id ) {
 			return array(
 				'success' => false,
-				'message' => __( 'Existing webhook is missing an ID.', 'wp-qurl' ),
+				'message' => __( 'Could not connect the existing LayerV logging setup.', 'wp-qurl' ),
 			);
 		}
 
@@ -389,7 +387,7 @@ class Webhook_Manager {
 				'success' => false,
 				'message' => sprintf(
 					/* translators: %s: API error message. */
-					__( 'Webhook was linked, but its signing secret could not be synchronized: %s', 'wp-qurl' ),
+					__( 'Logging is on, but a new secret could not be saved: %s', 'wp-qurl' ),
 					$regen['message']
 				),
 			);
@@ -397,7 +395,7 @@ class Webhook_Manager {
 
 		return array(
 			'success' => true,
-			'message' => __( 'Existing LayerV webhook linked to this site.', 'wp-qurl' ),
+			'message' => __( 'Logging is on.', 'wp-qurl' ),
 		);
 	}
 
@@ -455,6 +453,30 @@ class Webhook_Manager {
 		}
 
 		return array_values( array_unique( $sanitized ) );
+	}
+
+	/**
+	 * Unwrap paginated LayerV list envelopes into a flat item array.
+	 *
+	 * @param array $data API data.
+	 * @return array
+	 */
+	private function flatten_collection( $data ) {
+		if ( ! is_array( $data ) ) {
+			return array();
+		}
+
+		if ( isset( $data[0] ) && is_array( $data[0] ) ) {
+			return array_values( $data );
+		}
+
+		foreach ( array( 'items', 'deliveries', 'results', 'data' ) as $key ) {
+			if ( isset( $data[ $key ] ) && is_array( $data[ $key ] ) ) {
+				return $this->flatten_collection( $data[ $key ] );
+			}
+		}
+
+		return array();
 	}
 
 	/**

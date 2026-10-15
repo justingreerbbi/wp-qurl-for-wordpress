@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       WP qURL
  * Plugin URI:        https://layerv.ai/docs/
- * Description:       Create and manage LayerV qURL secure access links from the WordPress admin.
- * Version:           1.2.3
+ * Description:       Protect pages with private qURL links. Visitors need a link from you to see them.
+ * Version:           1.5.22
  * Requires at least: 6.3
  * Requires PHP:      8.0
  * Author:            Justin Greer
@@ -21,12 +21,12 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Plugin version.
  */
-define( 'WP_QURL_VERSION', '1.2.3' );
+define( 'WP_QURL_VERSION', '1.5.22' );
 
 /**
  * Independent database schema version.
  */
-define( 'WP_QURL_DB_VERSION', '1.2.3' );
+define( 'WP_QURL_DB_VERSION', '1.5.2' );
 
 /**
  * Plugin root file path.

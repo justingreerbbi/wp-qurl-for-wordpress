@@ -25,6 +25,11 @@ class Admin {
 	const DASHBOARD_STATUS_FILTER_META = 'wp_qurl_dashboard_status_filter';
 
 	/**
+	 * Transient prefix for a one-time minted portal URL.
+	 */
+	const PORTAL_FLASH_PREFIX = 'wp_qurl_portal_flash_';
+
+	/**
 	 * Singleton instance.
 	 *
 	 * @var Admin|null
@@ -98,8 +103,8 @@ class Admin {
 
 		add_submenu_page(
 			self::MENU_SLUG,
-			__( 'Create qURL', 'wp-qurl' ),
-			__( 'Create qURL', 'wp-qurl' ),
+			__( 'Mint qURL', 'wp-qurl' ),
+			__( 'Mint qURL', 'wp-qurl' ),
 			Capabilities::CREATE,
 			self::MENU_SLUG . '-create',
 			array( $this, 'render_create' )
@@ -151,7 +156,10 @@ class Admin {
 	 * @param string $hook Current admin page hook.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( false === strpos( $hook, self::MENU_SLUG ) ) {
+		$is_plugin = false !== strpos( (string) $hook, self::MENU_SLUG );
+		$post_type = isset( $_GET['post_type'] ) ? sanitize_key( wp_unslash( $_GET['post_type'] ) ) : (string) get_post_type(); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$is_page_editor = in_array( $hook, array( 'post.php', 'post-new.php' ), true ) && 'page' === $post_type;
+		if ( ! $is_plugin && ! $is_page_editor ) {
 			return;
 		}
 
@@ -206,8 +214,8 @@ class Admin {
 			case 'revoke_token':
 				$this->action_revoke_token();
 				break;
-			case 'terminate_sessions':
-				$this->action_terminate_sessions();
+			case 'extend_token':
+				$this->action_extend_token();
 				break;
 			case 'test_connection':
 				$this->action_test_connection();
@@ -260,19 +268,7 @@ class Admin {
 		check_admin_referer( 'wp_qurl_test_connection' );
 
 		$result = $this->api->test_connection();
-
-		$type = $result['success'] ? 'success' : 'error';
-		$key  = $result['success'] ? 'connection_ok' : 'connection_fail';
-
-		set_transient(
-			'wp_qurl_admin_notice',
-			array(
-				'type'    => $type,
-				'message' => $result['message'],
-			),
-			30
-		);
-
+		$this->notice( $result['success'] ? 'success' : 'error', $result['message'] );
 		wp_safe_redirect( admin_url( 'admin.php?page=' . self::MENU_SLUG . '-settings' ) );
 		exit;
 	}
@@ -364,22 +360,13 @@ class Admin {
 		check_admin_referer( $nonce_action );
 
 		$result = call_user_func( $callback );
-
-		set_transient(
-			'wp_qurl_admin_notice',
-			array(
-				'type'    => $result['success'] ? 'success' : 'error',
-				'message' => $result['message'],
-			),
-			30
-		);
-
+		$this->notice( $result['success'] ? 'success' : 'error', $result['message'] );
 		wp_safe_redirect( admin_url( 'admin.php?page=' . $page ) );
 		exit;
 	}
 
 	/**
-	 * Create a new qURL via the LayerV API.
+	 * Mint a new qURL via the LayerV API.
 	 */
 	private function action_create_qurl() {
 		if ( ! Capabilities::current_user_can_create() ) {
@@ -415,22 +402,18 @@ class Admin {
 		$result  = $service->mint( $body, Service::CONTEXT_ADMIN );
 
 		if ( is_wp_error( $result ) ) {
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'error',
-					'message' => $result->get_error_message(),
-				),
-				30
-			);
+			$this->notice( 'error', $result->get_error_message() );
 			wp_safe_redirect( admin_url( 'admin.php?page=' . self::MENU_SLUG . '-create' ) );
 			exit;
 		}
 
+		$path_id = Database::resource_id( $result['crid'] ?? ( $result['resource_id'] ?? '' ) );
+		self::stash_portal_link( $result['qurl_link'] ?? '' );
+
 		$redirect = add_query_arg(
 			array(
 				'page'        => self::MENU_SLUG . '-resource',
-				'resource_id' => rawurlencode( $result['resource_id'] ?? '' ),
+				'resource_id' => rawurlencode( $path_id ),
 				'created'     => '1',
 			),
 			admin_url( 'admin.php' )
@@ -441,7 +424,9 @@ class Admin {
 	}
 
 	/**
-	 * Mint a new access link for an existing resource.
+	 * Mint a new qURL for an existing resource.
+	 *
+	 * Uses POST /v1/resources/{id}/qurls so additional links share the same CRID.
 	 */
 	private function action_mint_link() {
 		if ( ! Capabilities::current_user_can_create() ) {
@@ -457,90 +442,62 @@ class Admin {
 			wp_die( esc_html__( 'You do not have permission to access this resource.', 'wp-qurl' ), '', array( 'response' => 403 ) );
 		}
 
-		$body = array();
+		$args = array(
+			'target_url' => $target_url,
+		);
 		if ( ! empty( $_POST['expires_in'] ) ) {
-			$body['expires_in'] = sanitize_text_field( wp_unslash( $_POST['expires_in'] ) );
+			$args['expires_in'] = sanitize_text_field( wp_unslash( $_POST['expires_in'] ) );
 		}
 		if ( ! empty( $_POST['label'] ) ) {
-			$body['label'] = sanitize_text_field( wp_unslash( $_POST['label'] ) );
+			$args['label'] = sanitize_text_field( wp_unslash( $_POST['label'] ) );
 		}
 
-		$stored_by_service = false;
-		if ( Service::resolve_protected_page_id( $target_url ) ) {
-			$result            = ( new Service() )->mint(
-				array(
-					'target_url' => $target_url,
-					'expires_in' => $body['expires_in'] ?? Settings::get( 'default_expires_in', '24h' ),
-					'label'      => $body['label'] ?? '',
-				),
-				Service::CONTEXT_ADMIN
-			);
-			$stored_by_service = ! is_wp_error( $result );
-			if ( $stored_by_service && ! empty( $result['resource_id'] ) ) {
-				$resource_id = $result['resource_id'];
-			}
-		} else {
-			$result = $this->api->mint_link( $resource_id, $body );
-		}
+		$result = ( new Service() )->mint_for_resource( $resource_id, $args, Service::CONTEXT_ADMIN );
+
+		$redirect_args = array(
+			'page'        => self::MENU_SLUG . '-resource',
+			'resource_id' => rawurlencode( $resource_id ),
+		);
 
 		if ( is_wp_error( $result ) ) {
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'error',
-					'message' => $result->get_error_message(),
-				),
-				30
-			);
-		} elseif ( ! $stored_by_service ) {
-			$token_id = Database::insert_token(
-				array(
-					'resource_id' => $resource_id,
-					'qurl_id'     => $result['qurl_id'] ?? '',
-					'target_url'  => $target_url,
-					'qurl_link'   => $result['qurl_link'] ?? '',
-					'label'       => $result['label'] ?? ( $body['label'] ?? '' ),
-					'expires_at'  => Service::format_storage_datetime( $result['expires_at'] ?? '' ),
-					'status'      => 'active',
-					'meta'        => array(
-						'type'           => $result['type'] ?? 'url',
-						'qurl_site'      => $result['qurl_site'] ?? '',
-						'branded_domain' => $result['branded_domain'] ?? '',
-					),
-				)
-			);
-
-			if ( ! $token_id ) {
-				if ( ! empty( $result['qurl_id'] ) ) {
-					$this->api->revoke_qurl_token( $resource_id, $result['qurl_id'] );
-				}
-				set_transient(
-					'wp_qurl_admin_notice',
-					array(
-						'type'    => 'error',
-						'message' => __( 'The qURL was minted but could not be stored and was revoked.', 'wp-qurl' ),
-					),
-					30
-				);
-			} else {
-				set_transient(
-					'wp_qurl_admin_notice',
-					array(
-						'type'    => 'success',
-						'message' => __( 'New access link minted successfully.', 'wp-qurl' ),
-					),
-					30
-				);
-			}
+			$this->notice( 'error', $result->get_error_message() );
 		} else {
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'success',
-					'message' => __( 'New protected-page access link created.', 'wp-qurl' ),
-				),
-				30
-			);
+			$path_id = Database::resource_id( $result['crid'] ?? ( $result['resource_id'] ?? $resource_id ) );
+			if ( $path_id ) {
+				$redirect_args['resource_id'] = rawurlencode( $path_id );
+			}
+			self::stash_portal_link( $result['qurl_link'] ?? '' );
+			$redirect_args['created'] = '1';
+			$this->notice( 'success', __( 'Your qURL is ready. Copy it now — it will not be shown again.', 'wp-qurl' ) );
+		}
+
+		wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'admin.php' ) ) );
+		exit;
+	}
+
+	/**
+	 * Extend an existing qURL's expiration.
+	 */
+	private function action_extend_token() {
+		if ( ! Capabilities::current_user_can_create() ) {
+			wp_die( esc_html__( 'Unauthorized.', 'wp-qurl' ) );
+		}
+
+		check_admin_referer( 'wp_qurl_extend_token' );
+
+		$resource_id = sanitize_text_field( wp_unslash( $_POST['resource_id'] ?? '' ) );
+		$local_id    = absint( $_POST['local_id'] ?? 0 );
+		$extend_by   = sanitize_text_field( wp_unslash( $_POST['extend_by'] ?? '24h' ) );
+
+		if ( ! $this->current_user_can_access_resource( $resource_id ) ) {
+			wp_die( esc_html__( 'You do not have permission to access this resource.', 'wp-qurl' ), '', array( 'response' => 403 ) );
+		}
+
+		$result = Service::extend_token( $local_id, $extend_by );
+		if ( is_wp_error( $result ) ) {
+			$this->notice( 'error', $result->get_error_message() );
+		} else {
+			$this->notice( 'success', __( 'Link expiration updated.', 'wp-qurl' ) );
 		}
 
 		wp_safe_redirect(
@@ -566,22 +523,12 @@ class Admin {
 		check_admin_referer( 'wp_qurl_revoke_resource' );
 
 		$resource_id = sanitize_text_field( wp_unslash( $_POST['resource_id'] ?? '' ) );
-		$result      = Service::admin_revoke_resource( $resource_id );
+		$result      = Service::revoke_resource( $resource_id );
 
 		if ( is_wp_error( $result ) ) {
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'error',
-					'message' => $result->get_error_message(),
-				),
-				30
-			);
+			$this->notice( 'error', $result->get_error_message() );
 		} else {
-			$this->store_revoke_notice(
-				$result,
-				__( 'Resource revoked successfully.', 'wp-qurl' )
-			);
+			$this->notice( 'success', __( 'All qURLs for this page were revoked.', 'wp-qurl' ) );
 		}
 
 		wp_safe_redirect( admin_url( 'admin.php?page=' . self::MENU_SLUG ) );
@@ -599,47 +546,27 @@ class Admin {
 		check_admin_referer( 'wp_qurl_revoke_token' );
 
 		$resource_id = sanitize_text_field( wp_unslash( $_POST['resource_id'] ?? '' ) );
-		$qurl_id     = sanitize_text_field( wp_unslash( $_POST['qurl_id'] ?? '' ) );
 		$local_id    = absint( $_POST['local_id'] ?? 0 );
+		$token       = Database::get_token( $local_id );
 
 		if ( ! $this->current_user_can_access_resource( $resource_id ) ) {
 			wp_die( esc_html__( 'You do not have permission to access this resource.', 'wp-qurl' ), '', array( 'response' => 403 ) );
 		}
 
-		if ( $local_id ) {
-			$local_token = Database::get_token( $local_id );
-			$owns_token  = $local_token
-				&& $resource_id === $local_token->resource_id
-				&& (
-					Capabilities::current_user_can_manage()
-					|| get_current_user_id() === (int) $local_token->created_by
-				);
-
-			if ( ! $owns_token ) {
-				wp_die( esc_html__( 'The selected qURL token is invalid.', 'wp-qurl' ), '', array( 'response' => 403 ) );
-			}
-
-			if ( '' === $qurl_id ) {
-				$qurl_id = $local_token->qurl_id;
-			}
+		$owns_token = $token
+			&& (
+				Capabilities::current_user_can_manage()
+				|| get_current_user_id() === (int) $token->created_by
+			);
+		if ( ! $owns_token ) {
+			wp_die( esc_html__( 'The selected qURL is invalid.', 'wp-qurl' ), '', array( 'response' => 403 ) );
 		}
 
-		$result = Service::admin_revoke_token( $resource_id, $qurl_id, $local_id );
-
+		$result = Service::revoke_token( $local_id );
 		if ( is_wp_error( $result ) ) {
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'error',
-					'message' => $result->get_error_message(),
-				),
-				30
-			);
+			$this->notice( 'error', $result->get_error_message() );
 		} else {
-			$this->store_revoke_notice(
-				$result,
-				__( 'qURL token revoked.', 'wp-qurl' )
-			);
+			$this->notice( 'success', __( 'qURL revoked.', 'wp-qurl' ) );
 		}
 
 		wp_safe_redirect(
@@ -647,58 +574,6 @@ class Admin {
 				array(
 					'page'        => self::MENU_SLUG . '-resource',
 					'resource_id' => rawurlencode( $resource_id ),
-				),
-				admin_url( 'admin.php' )
-			)
-		);
-		exit;
-	}
-
-	/**
-	 * Terminate all active sessions for a resource.
-	 */
-	private function action_terminate_sessions() {
-		if ( ! Capabilities::current_user_can_manage() ) {
-			wp_die( esc_html__( 'Unauthorized.', 'wp-qurl' ) );
-		}
-
-		check_admin_referer( 'wp_qurl_terminate_sessions' );
-
-		$resource_id = sanitize_text_field( wp_unslash( $_POST['resource_id'] ?? '' ) );
-		$result      = $this->api->terminate_all_sessions( $resource_id );
-
-		if ( is_wp_error( $result ) ) {
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'error',
-					'message' => $result->get_error_message(),
-				),
-				30
-			);
-		} else {
-			$count = isset( $result['terminated'] ) ? (int) $result['terminated'] : 0;
-			Database::revoke_page_grants( $resource_id );
-			set_transient(
-				'wp_qurl_admin_notice',
-				array(
-					'type'    => 'success',
-					'message' => sprintf(
-						/* translators: %d: number of sessions terminated */
-						_n( '%d session terminated.', '%d sessions terminated.', $count, 'wp-qurl' ),
-						$count
-					),
-				),
-				30
-			);
-		}
-
-		wp_safe_redirect(
-			add_query_arg(
-				array(
-					'page'        => self::MENU_SLUG . '-resource',
-					'resource_id' => rawurlencode( $resource_id ),
-					'tab'         => 'sessions',
 				),
 				admin_url( 'admin.php' )
 			)
@@ -715,57 +590,20 @@ class Admin {
 	 */
 	private function redirect_with_notice( $url, $key, $type ) {
 		$messages = $this->get_notice_messages();
-		$message  = $messages[ $key ] ?? $key;
-
-		set_transient(
-			'wp_qurl_admin_notice',
-			array(
-				'type'    => $type,
-				'message' => $message,
-			),
-			30
-		);
-
+		$this->notice( $type, $messages[ $key ] ?? $key );
 		wp_safe_redirect( $url );
 		exit;
 	}
 
 	/**
-	 * Store an admin notice for a revoke action.
+	 * Store a one-shot admin notice.
 	 *
-	 * WordPress is treated as authoritative: local revocation succeeds even when
-	 * LayerV returns an error such as "qURL not active".
-	 *
-	 * @param array  $result          Revoke result from Service.
-	 * @param string $success_message Base success message.
+	 * @param string $type    success|error|warning.
+	 * @param string $message Message.
 	 */
-	private function store_revoke_notice( array $result, $success_message ) {
-		$type    = 'success';
-		$message = $success_message;
-
-		if ( empty( $result['local_revoked'] ) ) {
-			$type    = 'warning';
-			$message = __( 'No active local qURL records were found. Remote status was checked when possible.', 'wp-qurl' );
-		} elseif ( ! empty( $result['remote_synced'] ) ) {
-			$message = $success_message;
-		} elseif ( ! empty( $result['benign_remote_error'] ) ) {
-			$message = sprintf(
-				/* translators: %s: base success message */
-				__( '%s LayerV reported this link was already inactive.', 'wp-qurl' ),
-				$success_message
-			);
-		} elseif ( ! empty( $result['remote_error'] ) ) {
-			$type    = 'warning';
-			$message = sprintf(
-				/* translators: 1: base success message, 2: LayerV error message */
-				__( '%1$s LayerV could not be updated: %2$s', 'wp-qurl' ),
-				$success_message,
-				$result['remote_error']
-			);
-		}
-
+	private function notice( $type, $message ) {
 		set_transient(
-			'wp_qurl_admin_notice',
+			'wp_qurl_admin_notice_' . get_current_user_id(),
 			array(
 				'type'    => $type,
 				'message' => $message,
@@ -800,12 +638,13 @@ class Admin {
 			return;
 		}
 
-		$notice = get_transient( 'wp_qurl_admin_notice' );
+		$key    = 'wp_qurl_admin_notice_' . get_current_user_id();
+		$notice = get_transient( $key );
 		if ( ! $notice ) {
 			return;
 		}
 
-		delete_transient( 'wp_qurl_admin_notice' );
+		delete_transient( $key );
 
 		$class = 'notice notice-' . esc_attr( $notice['type'] );
 		printf(
@@ -822,10 +661,8 @@ class Admin {
 	 */
 	private function get_notice_messages() {
 		return array(
-			'settings_saved'  => __( 'Settings saved.', 'wp-qurl' ),
-			'invalid_url'     => __( 'Please enter a valid HTTPS target URL.', 'wp-qurl' ),
-			'connection_ok'   => __( 'API connection successful.', 'wp-qurl' ),
-			'connection_fail' => __( 'API connection failed.', 'wp-qurl' ),
+			'settings_saved' => __( 'Settings saved.', 'wp-qurl' ),
+			'invalid_url'    => __( 'Enter a page URL that starts with https://.', 'wp-qurl' ),
 		);
 	}
 
@@ -837,49 +674,13 @@ class Admin {
 			wp_die( esc_html__( 'You do not have permission to access this page.', 'wp-qurl' ) );
 		}
 
-		$api_resources = array();
-		$api_error     = '';
-		$resource_ids  = array();
-
-		if ( Settings::is_configured() ) {
-			$params = array(
-				'limit' => 50,
-				'sort'  => 'created_at:desc',
-			);
-			if ( ! Capabilities::current_user_can_manage() ) {
-				$resource_ids = Database::get_user_resource_ids( get_current_user_id() );
-			}
-
-			$response = $this->api->list_qurls( $params );
-			if ( is_wp_error( $response ) ) {
-				$api_error = $response->get_error_message();
-			} else {
-				$api_resources = $response;
-				if ( ! Capabilities::current_user_can_manage() ) {
-					$api_resources = array_values(
-						array_filter(
-							(array) $api_resources,
-							static function ( $resource_data ) use ( $resource_ids ) {
-								return is_array( $resource_data )
-									&& isset( $resource_data['resource_id'] )
-									&& in_array( $resource_data['resource_id'], $resource_ids, true );
-							}
-						)
-					);
-				}
-			}
-		}
-
 		$local_args = array( 'per_page' => 1000 );
 		if ( ! Capabilities::current_user_can_manage() ) {
 			$local_args['created_by'] = get_current_user_id();
 		}
 		$local_groups   = Database::get_grouped_by_target( $local_args );
 		$status_filter  = $this->get_dashboard_status_filter();
-		$dashboard_rows = $this->build_dashboard_rows(
-			is_array( $api_resources ) ? $api_resources : array(),
-			$local_groups
-		);
+		$dashboard_rows = $this->build_dashboard_rows( $local_groups );
 		$status_counts  = $this->count_dashboard_statuses( $dashboard_rows );
 		$filtered_rows  = $this->filter_dashboard_rows_by_status( $dashboard_rows, $status_filter );
 
@@ -891,7 +692,6 @@ class Admin {
 				'status_counts'   => $status_counts,
 				'status_labels'   => $this->get_dashboard_status_labels(),
 				'total_row_count' => count( $dashboard_rows ),
-				'api_error'       => $api_error,
 				'configured'      => Settings::is_configured(),
 			)
 		);
@@ -907,6 +707,9 @@ class Admin {
 
 		$resource_id = sanitize_text_field( wp_unslash( $_GET['resource_id'] ?? '' ) );
 		$tab         = sanitize_key( wp_unslash( $_GET['tab'] ?? 'qurls' ) );
+		if ( 'sessions' === $tab ) {
+			$tab = 'qurls';
+		}
 
 		if ( empty( $resource_id ) ) {
 			wp_die( esc_html__( 'Resource ID is required.', 'wp-qurl' ) );
@@ -917,24 +720,16 @@ class Admin {
 		}
 
 		$resource  = null;
-		$qurls     = array();
-		$sessions  = array();
 		$api_error = '';
+		$path_id   = Database::resource_id( $resource_id );
 
 		if ( Settings::is_configured() ) {
-			$resource = $this->api->get_qurl( $resource_id );
+			$resource = $this->api->get_resource( $path_id );
 			if ( is_wp_error( $resource ) ) {
-				$api_error = $resource->get_error_message();
-			}
-
-			$qurls_response = $this->api->list_resource_qurls( $resource_id, array( 'limit' => 100 ) );
-			if ( ! is_wp_error( $qurls_response ) ) {
-				$qurls = $qurls_response;
-			}
-
-			$sessions_response = $this->api->list_sessions( $resource_id );
-			if ( ! is_wp_error( $sessions_response ) ) {
-				$sessions = $sessions_response;
+				if ( ! Service::is_already_gone( $resource ) ) {
+					$api_error = $resource->get_error_message();
+				}
+				$resource = null;
 			}
 		}
 
@@ -959,15 +754,45 @@ class Admin {
 			array(
 				'resource_id'  => $resource_id,
 				'resource'     => is_array( $resource ) ? $resource : null,
-				'qurls'        => is_array( $qurls ) ? $qurls : array(),
-				'sessions'     => is_array( $sessions ) ? $sessions : array(),
 				'local_tokens' => $local_tokens['items'],
 				'access_log'   => $access_log['items'],
 				'tab'          => $tab,
 				'api_error'    => $api_error,
-				'just_created' => ! empty( $_GET['created'] ),
+				'just_created' => ! empty( $_GET['created'] ), // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				'portal_link'  => self::take_portal_link(),
 			)
 		);
+	}
+
+	/**
+	 * Hold a minted portal URL until the next admin screen for this user.
+	 *
+	 * @param string $link Portal URL.
+	 */
+	public static function stash_portal_link( $link ) {
+		$link = esc_url_raw( (string) $link );
+		if ( '' === $link || ! is_user_logged_in() ) {
+			return;
+		}
+
+		set_transient( self::PORTAL_FLASH_PREFIX . get_current_user_id(), $link, 10 * MINUTE_IN_SECONDS );
+	}
+
+	/**
+	 * Read and delete the one-time portal URL for this user.
+	 *
+	 * @return string
+	 */
+	public static function take_portal_link() {
+		if ( ! is_user_logged_in() ) {
+			return '';
+		}
+
+		$key  = self::PORTAL_FLASH_PREFIX . get_current_user_id();
+		$link = get_transient( $key );
+		delete_transient( $key );
+
+		return is_string( $link ) ? $link : '';
 	}
 
 	/**
@@ -1013,38 +838,13 @@ class Admin {
 
 		$log = Database::get_access_log( $log_args );
 
-		// Also fetch live sessions from API for all known resources.
-		$live_sessions = array();
-		if ( Settings::is_configured() ) {
-			$local_args = array( 'per_page' => 500 );
-			if ( ! Capabilities::current_user_can_manage() ) {
-				$local_args['created_by'] = get_current_user_id();
-			}
-			$local = Database::get_tokens( $local_args );
-			$seen  = array();
-			foreach ( $local['items'] as $token ) {
-				if ( empty( $token->resource_id ) || isset( $seen[ $token->resource_id ] ) ) {
-					continue;
-				}
-				$seen[ $token->resource_id ] = true;
-				$sessions                    = $this->api->list_sessions( $token->resource_id );
-				if ( ! is_wp_error( $sessions ) && is_array( $sessions ) ) {
-					foreach ( $sessions as $session ) {
-						$session['_resource_id'] = $token->resource_id;
-						$live_sessions[]         = $session;
-					}
-				}
-			}
-		}
-
 		$this->render_view(
 			'access-log',
 			array(
-				'log'           => $log,
-				'live_sessions' => $live_sessions,
-				'filter'        => $filter,
-				'page'          => $page,
-				'configured'    => Settings::is_configured(),
+				'log'        => $log,
+				'filter'     => $filter,
+				'page'       => $page,
+				'configured' => Settings::is_configured(),
 			)
 		);
 	}
@@ -1107,7 +907,7 @@ class Admin {
 	 * @return string[]
 	 */
 	private function get_dashboard_status_filters() {
-		return array( '', 'active', 'revoked', 'expired', 'consumed' );
+		return array( '', 'active', 'revoked', 'expired' );
 	}
 
 	/**
@@ -1117,11 +917,10 @@ class Admin {
 	 */
 	private function get_dashboard_status_labels() {
 		return array(
-			''         => __( 'All', 'wp-qurl' ),
-			'active'   => __( 'Active', 'wp-qurl' ),
-			'revoked'  => __( 'Revoked', 'wp-qurl' ),
-			'expired'  => __( 'Expired', 'wp-qurl' ),
-			'consumed' => __( 'Consumed', 'wp-qurl' ),
+			''        => __( 'All', 'wp-qurl' ),
+			'active'  => __( 'Active', 'wp-qurl' ),
+			'revoked' => __( 'Revoked', 'wp-qurl' ),
+			'expired' => __( 'Expired', 'wp-qurl' ),
 		);
 	}
 
@@ -1146,57 +945,45 @@ class Admin {
 	}
 
 	/**
-	 * Merge API resources with locally stored tokens for dashboard display.
+	 * Build dashboard rows from locally stored tokens.
 	 *
-	 * @param array $api_resources Resources from LayerV.
-	 * @param array $local_groups  Local token groups.
+	 * @param array $local_groups Local token groups.
 	 * @return array<int, array<string, mixed>>
 	 */
-	private function build_dashboard_rows( array $api_resources, array $local_groups ) {
-		$rows                      = array();
-		$local_targets_by_resource = array();
+	private function build_dashboard_rows( array $local_groups ) {
+		$rows = array();
 
 		foreach ( $local_groups as $group ) {
-			foreach ( $group['tokens'] as $group_token ) {
-				if ( ! empty( $group_token->resource_id ) ) {
-					$local_targets_by_resource[ $group_token->resource_id ] = $group_token->target_url;
-				}
-			}
-		}
-
-		foreach ( $api_resources as $res ) {
-			if ( ! is_array( $res ) ) {
+			$path_id = sanitize_text_field( $group['crid'] ? $group['crid'] : ( $group['resource_id'] ?? '' ) );
+			if ( ! $path_id ) {
 				continue;
 			}
 
-			$resource_id = $res['resource_id'] ?? ( $res['target_url'] ?? '' );
-			if ( isset( $local_targets_by_resource[ $resource_id ] ) ) {
-				$res['target_url'] = $local_targets_by_resource[ $resource_id ];
-			}
-
-			$rows[ $resource_id ] = $res;
-		}
-
-		foreach ( $local_groups as $group ) {
-			foreach ( $group['tokens'] as $group_token ) {
-				$resource_id = $group_token->resource_id;
-				if ( ! isset( $rows[ $resource_id ] ) ) {
-					$rows[ $resource_id ] = array(
-						'resource_id' => $resource_id,
-						'target_url'  => $group_token->target_url,
-						'status'      => $group_token->status,
-						'qurl_count'  => 1,
-					);
-				} else {
-					$rows[ $resource_id ]['target_url'] = $group_token->target_url;
-					if ( empty( $rows[ $resource_id ]['status'] ) ) {
-						$rows[ $resource_id ]['status'] = $group_token->status;
+			$status     = 'revoked';
+			$expires_at = '';
+			$active     = 0;
+			foreach ( $group['tokens'] as $token ) {
+				if ( 'active' === $token->status ) {
+					$status = 'active';
+					++$active;
+					if ( $token->expires_at && ( ! $expires_at || $token->expires_at < $expires_at ) ) {
+						$expires_at = $token->expires_at;
 					}
+				} elseif ( 'expired' === $token->status && 'active' !== $status ) {
+					$status = 'expired';
 				}
 			}
+
+			$rows[] = array(
+				'path_id'     => $path_id,
+				'target_url'  => $group['target_url'],
+				'status'      => $status,
+				'qurl_count'  => $active ? $active : count( $group['tokens'] ),
+				'expires_at'  => $expires_at,
+			);
 		}
 
-		return array_values( $rows );
+		return $rows;
 	}
 
 	/**
@@ -1210,7 +997,7 @@ class Admin {
 			'' => count( $rows ),
 		);
 
-		foreach ( array( 'active', 'revoked', 'expired', 'consumed' ) as $status ) {
+		foreach ( array( 'active', 'revoked', 'expired' ) as $status ) {
 			$counts[ $status ] = 0;
 		}
 

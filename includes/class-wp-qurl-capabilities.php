@@ -20,7 +20,7 @@ class Capabilities {
 	const MANAGE = 'manage_qurls';
 
 	/**
-	 * Capability for creating qURLs.
+	 * Capability for minting qURLs.
 	 */
 	const CREATE = 'create_qurls';
 

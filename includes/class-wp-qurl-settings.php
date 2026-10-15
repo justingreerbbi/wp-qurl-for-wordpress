@@ -46,7 +46,6 @@ class Settings {
 				'frontend_mint_daily_limit'       => 10,
 				'frontend_allowed_hosts'          => '',
 				'frontend_mint_roles'             => array( 'subscriber', 'contributor' ),
-				'enable_debug_mode'               => false,
 			)
 		);
 	}
@@ -74,7 +73,6 @@ class Settings {
 			'frontend_mint_daily_limit'       => 10,
 			'frontend_allowed_hosts'          => '',
 			'frontend_mint_roles'             => array( 'subscriber', 'contributor' ),
-			'enable_debug_mode'               => false,
 		);
 
 		$stored = get_option( self::OPTION_KEY, array() );
@@ -165,17 +163,6 @@ class Settings {
 	}
 
 	/**
-	 * Whether a LayerV webhook is registered for protected-page access events.
-	 *
-	 * @return bool
-	 */
-	public static function is_webhook_ready() {
-		return self::is_webhook_registered()
-			&& self::has_webhook_secret()
-			&& in_array( 'qurl.accessed', self::get_webhook_events(), true );
-	}
-
-	/**
 	 * Save webhook registration from LayerV.
 	 *
 	 * @param string $webhook_id LayerV webhook ID.
@@ -253,11 +240,17 @@ class Settings {
 			'frontend_mint_daily_limit'       => absint( $input['frontend_mint_daily_limit'] ?? $current['frontend_mint_daily_limit'] ),
 			'frontend_allowed_hosts'          => self::sanitize_hosts_text( $input['frontend_allowed_hosts'] ?? $current['frontend_allowed_hosts'] ),
 			'frontend_mint_roles'             => self::sanitize_roles( $input['frontend_mint_roles'] ?? array() ),
-			'enable_debug_mode'               => ! empty( $input['enable_debug_mode'] ),
 		);
 
-		if ( ! empty( $input['api_key'] ) ) {
-			$settings['api_key'] = Crypto::encrypt( sanitize_text_field( $input['api_key'] ) );
+		$submitted_key = '';
+		if ( ! empty( $input['wp_qurl_api_key'] ) ) {
+			$submitted_key = sanitize_text_field( (string) $input['wp_qurl_api_key'] );
+		} elseif ( ! empty( $input['api_key'] ) ) {
+			$submitted_key = sanitize_text_field( (string) $input['api_key'] );
+		}
+
+		if ( '' !== $submitted_key && ! self::is_browser_password_autofill( $submitted_key ) ) {
+			$settings['api_key'] = Crypto::encrypt( $submitted_key );
 		} else {
 			$settings['api_key'] = $current['api_key'];
 		}
@@ -280,19 +273,23 @@ class Settings {
 	}
 
 	/**
-	 * Get the REST webhook endpoint URL for LayerV configuration.
+	 * Public webhook URL LayerV should POST to.
+	 *
+	 * Uses a front-end query argument rather than /wp-json so plugins
+	 * that disable the REST API cannot drop qurl.accessed deliveries.
 	 *
 	 * @return string
 	 */
 	public static function get_webhook_url() {
 		$token = self::get( 'webhook_token', '' );
 		if ( '' === $token ) {
-			$settings                    = self::get_all();
-			$settings['webhook_token']   = wp_generate_password( 24, false );
+			$settings                  = self::get_all();
+			$settings['webhook_token'] = wp_generate_password( 24, false );
 			update_option( self::OPTION_KEY, $settings );
 			$token = $settings['webhook_token'];
 		}
-		return rest_url( 'wp-qurl/v1/webhook/' . $token );
+
+		return add_query_arg( Webhook::QUERY_ARG, $token, home_url( '/' ) );
 	}
 
 	/**
@@ -305,21 +302,18 @@ class Settings {
 	}
 
 	/**
-	 * Whether blocked-page debug output is enabled.
+	 * Ignore password-manager autofill of the WordPress login password.
 	 *
+	 * @param string $value Submitted API key field.
 	 * @return bool
 	 */
-	public static function is_debug_mode() {
-		return (bool) self::get( 'enable_debug_mode', false );
-	}
+	private static function is_browser_password_autofill( $value ) {
+		$user = wp_get_current_user();
+		if ( ! $user || ! $user->ID || ! $user->user_pass ) {
+			return false;
+		}
 
-	/**
-	 * Apply option migrations tied to database schema version bumps.
-	 *
-	 * @param string $from_version Previously installed DB schema version.
-	 */
-	public static function migrate_from_db_version( $from_version ) {
-		unset( $from_version );
+		return wp_check_password( $value, $user->user_pass, $user->ID );
 	}
 
 	/**

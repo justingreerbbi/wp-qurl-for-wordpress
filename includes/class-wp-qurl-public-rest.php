@@ -92,7 +92,7 @@ class Public_Rest {
 			if ( ! Capabilities::current_user_can_mint_self() ) {
 				return new \WP_Error(
 					'rest_forbidden',
-					__( 'You are not allowed to generate qURL links.', 'wp-qurl' ),
+					__( 'You are not allowed to mint qURLs.', 'wp-qurl' ),
 					array( 'status' => 403 )
 				);
 			}
@@ -103,7 +103,7 @@ class Public_Rest {
 		if ( ! Blocks::endpoint_allows_visitors( $endpoint ) ) {
 			return new \WP_Error(
 				'rest_forbidden',
-				__( 'You must be logged in to generate qURL links.', 'wp-qurl' ),
+				__( 'You must be logged in to mint qURLs.', 'wp-qurl' ),
 				array( 'status' => 401 )
 			);
 		}
@@ -142,28 +142,21 @@ class Public_Rest {
 			$existing = Service::get_user_active_token( $user_id, $target );
 		}
 
-		if ( $existing && ! empty( $existing->qurl_link ) ) {
-			return rest_ensure_response(
-				array(
-					'success'     => true,
-					'existing'    => true,
-					'qurl_link'   => $existing->qurl_link,
-					'expires_at'  => $existing->expires_at,
-					'resource_id' => $existing->resource_id,
-					'qurl_id'     => $existing->qurl_id,
-				)
-			);
-		}
-
 		$service = new Service();
-		$result  = $service->mint(
-			array(
-				'target_url' => $target,
-				'created_by' => $is_guest ? 0 : $user_id,
-				'meta'       => $meta,
-			),
-			Service::CONTEXT_FRONTEND_BLOCK
+		$args    = array(
+			'target_url' => $target,
+			'created_by' => $is_guest ? 0 : $user_id,
+			'meta'       => $meta,
 		);
+
+		if ( $existing ) {
+			$path_id = $existing->crid ? $existing->crid : $existing->resource_id;
+			$result  = $path_id
+				? $service->mint_for_resource( $path_id, $args, Service::CONTEXT_FRONTEND_BLOCK )
+				: $service->mint( $args, Service::CONTEXT_FRONTEND_BLOCK );
+		} else {
+			$result = $service->mint( $args, Service::CONTEXT_FRONTEND_BLOCK );
+		}
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -171,12 +164,11 @@ class Public_Rest {
 
 		return rest_ensure_response(
 			array(
-				'success'     => true,
-				'existing'    => false,
-				'qurl_link'   => $result['qurl_link'],
-				'expires_at'  => $result['expires_at'],
-				'resource_id' => $result['resource_id'],
-				'qurl_id'     => $result['qurl_id'],
+				'success'    => true,
+				'existing'   => false,
+				'qurl_link'  => $result['qurl_link'] ?? '',
+				'expires_at' => $result['expires_at'] ?? '',
+				'qurl_id'    => $result['qurl_id'] ?? '',
 			)
 		);
 	}
@@ -213,9 +205,7 @@ class Public_Rest {
 		return rest_ensure_response(
 			array(
 				'has_active'  => true,
-				'qurl_link'   => $existing->qurl_link,
 				'expires_at'  => $existing->expires_at,
-				'resource_id' => $existing->resource_id,
 				'qurl_id'     => $existing->qurl_id,
 			)
 		);

@@ -3,11 +3,11 @@
 	"apiVersion": 3,
 	"name": "wp-qurl/mint",
 	"version": "1.3.2",
-	"title": "qURL Access Link",
+	"title": "Mint qURL",
 	"category": "widgets",
 	"icon": "admin-links",
-	"description": "Let users or visitors generate a one-time qURL link to a configured endpoint.",
-	"keywords": [ "qurl", "access", "secure", "link" ],
+	"description": "A button that makes a private qURL for a page.",
+	"keywords": [ "qurl", "mint", "layerv", "secure", "link" ],
 	"textdomain": "wp-qurl",
 	"attributes": {
 		"endpoint": {
@@ -16,15 +16,15 @@
 		},
 		"buttonText": {
 			"type": "string",
-			"default": "Generate Access Link"
+			"default": "Mint qURL"
 		},
 		"successMessage": {
 			"type": "string",
-			"default": "Your one-time access link:"
+			"default": "Your qURL:"
 		},
 		"loginMessage": {
 			"type": "string",
-			"default": "Log in to generate your personal access link."
+			"default": "Log in to get your qURL."
 		},
 		"allowVisitors": {
 			"type": "boolean",

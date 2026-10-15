@@ -1,6 +1,6 @@
 <?php
 /**
- * Create qURL form view.
+ * Mint qURL form view.
  *
  * @package WP_QURL
  *
@@ -15,14 +15,14 @@ $prefill_target_url = $prefill_target_url ?? '';
 $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' );
 ?>
 <div class="wrap wp-qurl-wrap">
-	<h1><?php esc_html_e( 'Create qURL', 'wp-qurl' ); ?></h1>
+	<h1><?php esc_html_e( 'Mint qURL', 'wp-qurl' ); ?></h1>
 
 	<?php if ( ! $configured ) : ?>
 		<div class="notice notice-warning">
 			<p>
 				<?php
 				printf(
-					esc_html__( 'Configure your LayerV API key in %s before creating qURLs.', 'wp-qurl' ),
+					esc_html__( 'Add your API key in %s first.', 'wp-qurl' ),
 					'<a href="' . esc_url( admin_url( 'admin.php?page=wp-qurl-settings' ) ) . '">' . esc_html__( 'Settings', 'wp-qurl' ) . '</a>'
 				);
 				?>
@@ -32,7 +32,7 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 
 	<div class="wp-qurl-card">
 		<p class="description">
-			<?php esc_html_e( 'Create a secure, time-limited access link to a protected URL using the LayerV qURL API. The portal link is shown once after creation — store it safely.', 'wp-qurl' ); ?>
+			<?php esc_html_e( 'Make a private link to a page. Copy it when it appears — it only shows once.', 'wp-qurl' ); ?>
 		</p>
 
 		<form method="post" action="">
@@ -42,13 +42,13 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 			<table class="form-table" role="presentation">
 				<tr>
 					<th scope="row">
-						<label for="target_url"><?php esc_html_e( 'Target URL', 'wp-qurl' ); ?> <span class="required">*</span></label>
+						<label for="target_url"><?php esc_html_e( 'Page URL', 'wp-qurl' ); ?> <span class="required">*</span></label>
 					</th>
 					<td>
 						<input type="url" name="target_url" id="target_url" class="regular-text" required
 							value="<?php echo esc_attr( $prefill_target_url ); ?>"
 							placeholder="https://internal.example.com/dashboard" <?php disabled( ! $configured ); ?> />
-						<p class="description"><?php esc_html_e( 'The HTTPS URL to protect. Must be a valid HTTPS URL.', 'wp-qurl' ); ?></p>
+						<p class="description"><?php esc_html_e( 'The page this link should open.', 'wp-qurl' ); ?></p>
 					</td>
 				</tr>
 				<tr>
@@ -58,7 +58,7 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 					<td>
 						<input type="text" name="label" id="label" class="regular-text" maxlength="500"
 							placeholder="<?php esc_attr_e( 'e.g. Contractor access for Alice', 'wp-qurl' ); ?>" <?php disabled( ! $configured ); ?> />
-						<p class="description"><?php esc_html_e( 'Human-readable label identifying who this qURL is for.', 'wp-qurl' ); ?></p>
+						<p class="description"><?php esc_html_e( 'Optional. A note so you remember who this is for.', 'wp-qurl' ); ?></p>
 					</td>
 				</tr>
 				<tr>
@@ -67,11 +67,12 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 					</th>
 					<td>
 						<textarea name="description" id="description" class="large-text" rows="3" <?php disabled( ! $configured ); ?>></textarea>
+						<p class="description"><?php esc_html_e( 'Optional. Extra notes for yourself.', 'wp-qurl' ); ?></p>
 					</td>
 				</tr>
 				<tr>
 					<th scope="row">
-						<label for="expires_in"><?php esc_html_e( 'Link Expiration', 'wp-qurl' ); ?></label>
+						<label for="expires_in"><?php esc_html_e( 'Link expiration', 'wp-qurl' ); ?></label>
 					</th>
 					<td>
 						<select name="expires_in" id="expires_in" <?php disabled( ! $configured ); ?>>
@@ -85,12 +86,12 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 								</option>
 							<?php endforeach; ?>
 						</select>
-						<p class="description"><?php esc_html_e( 'How long the access link remains valid before it expires.', 'wp-qurl' ); ?></p>
+						<p class="description"><?php esc_html_e( 'How long the link stays usable.', 'wp-qurl' ); ?></p>
 					</td>
 				</tr>
 				<tr>
 					<th scope="row">
-						<label for="session_duration"><?php esc_html_e( 'Session Duration', 'wp-qurl' ); ?></label>
+						<label for="session_duration"><?php esc_html_e( 'Viewing time', 'wp-qurl' ); ?></label>
 					</th>
 					<td>
 						<select name="session_duration" id="session_duration" <?php disabled( ! $configured ); ?>>
@@ -104,7 +105,7 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 								</option>
 							<?php endforeach; ?>
 						</select>
-						<p class="description"><?php esc_html_e( 'How long access lasts after the recipient opens the link.', 'wp-qurl' ); ?></p>
+						<p class="description"><?php esc_html_e( 'How long they can keep viewing after they open it.', 'wp-qurl' ); ?></p>
 					</td>
 				</tr>
 				<tr>
@@ -113,23 +114,23 @@ $button_attrs        = $configured ? array() : array( 'disabled' => 'disabled' )
 						<label>
 							<input type="checkbox" name="one_time_use" value="1"
 								<?php checked( $settings['default_one_time_use'] ); ?> <?php disabled( ! $configured ); ?> />
-							<?php esc_html_e( 'Expire after a single use', 'wp-qurl' ); ?>
+							<?php esc_html_e( 'This link works only once', 'wp-qurl' ); ?>
 						</label>
 					</td>
 				</tr>
 				<tr>
 					<th scope="row">
-						<label for="max_sessions"><?php esc_html_e( 'Max Concurrent Sessions', 'wp-qurl' ); ?></label>
+						<label for="max_sessions"><?php esc_html_e( 'People at once', 'wp-qurl' ); ?></label>
 					</th>
 					<td>
 						<input type="number" name="max_sessions" id="max_sessions" min="0" max="1000"
 							value="<?php echo esc_attr( $settings['default_max_sessions'] ); ?>" <?php disabled( ! $configured ); ?> />
-						<p class="description"><?php esc_html_e( '0 = unlimited. Limits concurrent visitors per qURL token.', 'wp-qurl' ); ?></p>
+						<p class="description"><?php esc_html_e( 'How many people can use it at the same time. 0 means no limit.', 'wp-qurl' ); ?></p>
 					</td>
 				</tr>
 			</table>
 
-			<?php submit_button( __( 'Create qURL', 'wp-qurl' ), 'primary', 'submit', true, $button_attrs ); ?>
+			<?php submit_button( __( 'Mint qURL', 'wp-qurl' ), 'primary', 'submit', true, $button_attrs ); ?>
 		</form>
 	</div>
 </div>
